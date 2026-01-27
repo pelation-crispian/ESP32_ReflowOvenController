@@ -5,43 +5,6 @@
 // (c) 2012-2013 Ed Simmons
 // ----------------------------------------------------------------------------
 
-//Devdefins
-//#define NOEDGEERRORREPORT 
-
-//Pin Mapping
-#define LCD_CS      27
-#define LCD_DC      23
-#define LCD_RESET   22
-#define SD_CS       5
-#define ENC1        35
-#define ENC2        32
-#define ENC_B       33
-
-#define HEATER1     17 
-#define HEATER2     16 
-#define ZEROX       4
-
-#define TEMP1_CS    18
-#define TEMP2_CS    19
-
-#define BUZZER      25
-
-#define RGB_CLK     21
-#define RGB_SDO     26
-
-//constance
-#define RECAL_ZEROX_TIME_MS 100 
-#define ZEROX_TIMEOUT_MS 5000      
-#define READ_TEMP_INTERVAL_MS 100 
-#define READ_TEMP_AVERAGE_COUNT 10 
-
-#define RGB_LED_BRITHNESS_1TO255  125 
-#define IDLE_TEMP     50
-#define MAX_PROFILES  30
-#define MENUE_ITEMS_VISIBLE 5
-#define MENU_ITEM_HIEGT 12
-#define PROFILE_NAME_LENGTH 11
-
 //includes
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -50,6 +13,12 @@
 #include <Preferences.h>
 #include <SPI.h>
 #include <Ticker.h>
+#include "max6675.h"
+#include "Button2.h"
+#include <neotimer.h>
+#include "driver/ledc.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 #include "src/Adafruit_GFX_Library/Adafruit_GFX.h"
 #include "src/Adafruit-ST7735-Library/Adafruit_ST7735.h"
@@ -59,6 +28,77 @@
 #include "src/ClickEncoder/ClickEncoder.h"
 
 #include "root_html.h"
+
+//Devdefins
+//#define NOEDGEERRORREPORT 
+
+//Pin Mapping
+#define LCD_CS      15
+#define LCD_DC      27
+#define LCD_RESET   33
+#define SD_CS       5
+#define ENC1        35
+#define ENC2        32
+#define ENC_B       33
+
+#define BTN_2       4 //startstop
+#define BTN_13      16  //warmer
+#define BTN_4       17  //grill
+#define BTN_3       5 //toast
+#define BTN_14      18  //bake
+#define BTN_11      19  //clock
+#define BTN_12_ADC  36    //ADC1_0  -(0-60) +(600-700) time(1000-1300) temp(1500-1700) open 4095
+
+#define HEATER1     22 
+#define ZEROX       4
+#define FAN1        21
+
+#define TEMP1_CS    32
+#define NTC_ADC     19    //ADC1_3
+
+#define BUZZER      2
+
+#define LEDC_TIMER              LEDC_TIMER_0
+#define LEDC_MODE               LEDC_LOW_SPEED_MODE
+#define LEDC_OUTPUT_IO          (5) // Define the output GPIO
+#define LEDC_CHANNEL            LEDC_CHANNEL_0
+#define LEDC_DUTY_RES           LEDC_TIMER_13_BIT // Set duty resolution to 13 bits
+#define LEDC_DUTY               (4095) // Set duty to 50%. ((2 ** 13) - 1) * 50% = 4095
+#define LEDC_FREQUENCY          (5000) // Frequency in Hertz. Set frequency at 5 kHz
+
+#define  SCR_PWM_CHANNEL  0
+#define  SCR_PWM_FREQUENCY  3
+#define  SCR_PWM_RESOLUTION 8
+
+//constance
+#define RECAL_ZEROX_TIME_MS 100 
+#define ZEROX_TIMEOUT_MS 5000      
+#define READ_TEMP_INTERVAL_MS 250 
+#define READ_TEMP_AVERAGE_COUNT 1
+
+#define RGB_LED_BRITHNESS_1TO255  125 
+#define IDLE_TEMP     50
+#define MAX_PROFILES  30
+#define MENUE_ITEMS_VISIBLE 8
+#define MENU_ITEM_HIEGT 12
+#define PROFILE_NAME_LENGTH 11
+
+Neotimer timer_beep = Neotimer(500);
+Neotimer timer_temp = Neotimer(READ_TEMP_INTERVAL_MS);
+Neotimer timer_dsp_btmln = Neotimer(200);
+Neotimer timer_display = Neotimer(1000);
+Neotimer timer_control = Neotimer(100);
+Neotimer timer_countupdown = Neotimer(200);
+
+Button2 btn_startstop;
+Button2 btn_up;
+Button2 btn_down;
+Button2 btn_left;
+Button2 btn_right;
+Button2 btn_stop;
+
+bool countup = false;
+bool countdown = false;
 
 //structs
 // data type for the values used in the reflow profile
@@ -131,15 +171,9 @@ const char * ver = "4.0";
 const uint8_t asinelookupTable[] {0,10,14,17,20,22,25,27,28,30,32,34,35,37,38,39,41,42,43,44,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,67,68,69,70,71,72,72,73,74,75,76,76,77,78,79,80,80,81,82,83,83,84,85,86,86,87,88,88,89,90,91,91,92,93,93,94,95,95,96,97,98,98,99,100,100,101,102,102,103,104,104,105,106,106,107,108,108,109,110,110,111,111,112,113,113,114,115,115,116,117,117,118,119,119,120,120,121,122,122,123,124,124,125,126,126,127,128,128,129,129,130,131,131,132,133,133,134,135,135,136,136,137,138,138,139,140,140,141,142,142,143,144,144,145,145,146,147,147,148,149,149,150,151,151,152,153,153,154,155,155,156,157,157,158,159,160,160,161,162,162,163,164,164,165,166,167,167,168,169,169,170,171,172,172,173,174,175,175,176,177,178,179,179,180,181,182,183,183,184,185,186,187,188,188,189,190,191,192,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,211,212,213,214,216,217,218,220,221,223,225,227,228,230,233,235,238,241,245};
 
 SPIClass MYSPI(HSPI); 
-SPIClass RGBLED(VSPI); 
 Adafruit_ST7735 tft = Adafruit_ST7735(&MYSPI,LCD_CS, LCD_DC, LCD_RESET);
-ClickEncoder Encoder(ENC1, ENC2, ENC_B, 2);
-hw_timer_t * encodertimer = NULL;
 Thermocouple Temp_1;
-Thermocouple Temp_2;
 Menu::Engine myMenue;
-portMUX_TYPE ZeroCrossingMutex = portMUX_INITIALIZER_UNLOCKED;
-esp_timer_handle_t  SwitchPowerTimer;
 Preferences PREF;
 
 WebServer server(80);
@@ -147,12 +181,7 @@ WebServer serverAction(8080);
 
 volatile boolean globalError=false;
 
-volatile uint8_t zeroCrossingTimesPointer=0;
-volatile uint64_t zeroCrossingTimes[32];
-volatile uint16_t zeroCrossingDuration=0;
-volatile uint16_t zeroCrossingPoint=0;
-
-volatile uint8_t  powerHeater=0;
+volatile uint16_t  powerHeater=0;
 
 float aktSystemTemperature;
 float aktSystemTemperatureRamp; //°C/s
@@ -224,46 +253,14 @@ bool initialProcessDisplay = false;
 
 uint64_t cycleStartTime=0;
 
-
-
-//Funcktions
-float Hue_2_RGB( float v1, float v2, float vH )            
-{
-  float r;
-  if ( vH <= 0 ) 
-    vH += 1;
-  if ( vH > 1 ) 
-    vH -= 1;
-  if ( ( 6 * vH ) < 1 )
-  {
-    r= v1 + ( v2 - v1 ) * 6 * vH ;
-  }
-  else if ( ( 2 * vH ) < 1 ) 
-  {
-    r=  v2 ;
-  }
-  else if ( ( 3 * vH ) < 2 ) 
-  {
-    r=  v1 + ( v2 - v1 ) * (.66-vH) * 6;
-  }
-  else
-  {
-    r=v1;
-  }
-  if(r<0)
-  {
-    r=0;
-  }
-  return r;
-}  
-
 void reportError(char *text)
 {
   globalError=true;
 
   //Turn off heaters
   digitalWrite(HEATER1,LOW);
-  digitalWrite(HEATER2,LOW);
+  ledcWrite(SCR_PWM_CHANNEL,0);
+  digitalWrite(FAN1,0);
   
   Serial.print("Report Error: ");
   Serial.println(text);
@@ -286,21 +283,10 @@ void reportError(char *text)
   tft.println("Power off!");
 
   while(1){
-    setLEDRGBBColor(0,0,0);
+
     delay(1000);
-    setLEDRGBBColor(RGB_LED_BRITHNESS_1TO255,0,0);
     delay(1000);
   }
-}
-
-
-void setLEDRGBBColor(uint8_t r, uint8_t g, uint8_t b)
-{
-  RGBLED.beginTransaction(SPISettings(1000000, MSBFIRST, SPI_MODE0));
-  RGBLED.transfer(b);
-  RGBLED.transfer(g);
-  RGBLED.transfer(r);
-  RGBLED.endTransaction();
 }
 
 
@@ -313,111 +299,19 @@ void readThermocouple(struct Thermocouple* input) {
   digitalWrite(input->chipSelect, LOW);
   delay(1);
   
-  for (int8_t i = 3; i >= 0; i--) {
+  for (int8_t i = 1; i >= 0; i--) {
     sensor.bytes[i] = MYSPI.transfer(0x00);
   }
   digitalWrite(input->chipSelect, HIGH);
   MYSPI.endTransaction();
   digitalWrite(LCD_CS, lcdState);
 
-  input->stat = sensor.bytes[0] & 0b111;
+  input->stat = sensor.bytes[0] & 0b100;
 
-  uint16_t value = (sensor.value >> 18) & 0x3FFF; // mask off the sign bit and shit to the correct alignment for the temp data  
+  uint16_t value = (sensor.value >> 3) & 0x1FFF; // mask off the sign bit and shit to the correct alignment for the temp data  
   input->temperature = value * 0.25;
 
 }
-
-void IRAM_ATTR zeroCrossingDetected()
-{
-  uint64_t time= esp_timer_get_time();
-  if(time>(zeroCrossingTimes[zeroCrossingTimesPointer]+100)) //filter multiple triggering < 100µs
-  {
-    zeroCrossingTimesPointer = (zeroCrossingTimesPointer+1) & 0x1F;
-    zeroCrossingTimes[zeroCrossingTimesPointer]=time;
-  }
-}
-
-void IRAM_ATTR switchPower()
-{
-  static boolean nextisinPhased= false;
-  static boolean nextIsZcross= false;
-  uint32_t delta=1000000;
-  //get zerro crossing Values    
-  portENTER_CRITICAL(&ZeroCrossingMutex);
-  uint16_t duration = zeroCrossingDuration;
-  uint16_t xpoint =zeroCrossingPoint;
-  portEXIT_CRITICAL(&ZeroCrossingMutex);        
-  uint8_t setvalue=powerHeater;
-  
-  digitalWrite(HEATER1,LOW);
-  digitalWrite(HEATER2,LOW);
-
-  if(!globalError)
-  {
-    if(nextIsZcross==true)
-    {
-      if(setvalue!=0)
-      {
-        delta =((uint32_t)duration*(256-setvalue))/256;
-        if(delta<500)
-        {
-          delta=500;          
-        }
-        if(delta>(duration-500))
-        {
-          delta=duration-500;          
-        }
-        nextisinPhased=true;        
-      }
-      else
-      {
-        delta=duration/2;
-      }
-      nextIsZcross=false;
-    }
-    else
-    {
-      if(nextisinPhased==true)
-      {
-        digitalWrite(HEATER1,HIGH);
-        digitalWrite(HEATER2,HIGH);
-        nextisinPhased=false;
-      }
-      if(duration>7000)
-      {
-        //synconice with Zerrocrossing
-        uint64_t time= esp_timer_get_time();
-        uint64_t nextcrossing= time - (time %duration);
-        nextcrossing += xpoint;
-        //200us befor ZCrossing to give the SSR time to turn off 
-        nextcrossing-=500;
-        //we are alwasy at least 500s awai from an crossing event!
-        if(nextcrossing<time+200) 
-        { 
-          nextcrossing += duration;
-        }
-        //delta > 100us to allwo the interrupt to work
-        if(nextcrossing-100>time)
-        {
-          delta=nextcrossing-time;
-        }
-        else
-        {
-          Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
-          delta=100;          
-        }
-        nextIsZcross = true;    
-      }
-
-    }
-  }
-  esp_timer_start_once(SwitchPowerTimer,delta); 
-}
-
-void IRAM_ATTR encoderServices(void){
-    Encoder.service();      
-}
-
 
 void spashscreen()
 {
@@ -673,7 +567,6 @@ bool editNumericalValue(const Menu::Action_t action)
       tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
       tft.setCursor(10, 80);
       tft.print("Edit & click to save.");
-      Encoder.setAccelerationEnabled(true);
       //save last Value
       if(iValue!=NULL) iValueLast=*iValue;
       if(dValue!=NULL) dValueLast=*dValue;
@@ -739,7 +632,6 @@ bool editNumericalValue(const Menu::Action_t action)
     else if (isPidSetting(myMenue.currentItem)) {
       savePID();
     }
-    Encoder.setAccelerationEnabled(false);
   }
   return true;
 }
@@ -756,7 +648,6 @@ bool editProfileName(const Menu::Action_t action) {
       init =true;
       currentState = Edit;
       name[0]=0;
-      Encoder.setAccelerationEnabled(true);
     }
     else if(action==Menu::actionTrigger)
     {
@@ -768,13 +659,11 @@ bool editProfileName(const Menu::Action_t action) {
       //Done!
       snprintf(activeProfile.name,PROFILE_NAME_LENGTH,"%s",name);      
       currentState = Settings;
-      Encoder.setAccelerationEnabled(false);
       clearLastMenuItemRenderState();      
     }    
   }
   else if (action == Menu::actionParent && currentState == Edit) 
   {
-    Encoder.setAccelerationEnabled(false);
     currentState = Settings;
     clearLastMenuItemRenderState();
   }
@@ -789,7 +678,7 @@ bool manualHeating(const Menu::Action_t action) {
     {
       currentState = Edit;
       tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
-
+      tft.fillScreen(ST7735_WHITE);
       encAbsolute = 0;      
       tft.setCursor(10, 100);
       tft.print("[Double]click to stop!");
@@ -956,7 +845,6 @@ bool menuWiFi(const Menu::Action_t action){
         {
           init =true; 
           currentState = Edit;
-          Encoder.setAccelerationEnabled(true);
         }
         else if(action==Menu::actionTrigger)
         {
@@ -968,7 +856,6 @@ bool menuWiFi(const Menu::Action_t action){
           PREF.putString("WIFI_SSID", WiFi.SSID(index).c_str());
           PREF.putString("WIFI_PASSWORD", buffer);
           currentState = Settings;
-          Encoder.setAccelerationEnabled(false);
           myMenue.navigate(&miWIFIUseSaved);
           myMenue.executeCallbackAction(Menu::actionTrigger);          
         }
@@ -979,7 +866,6 @@ bool menuWiFi(const Menu::Action_t action){
   }
   if(action == Menu::actionParent && currentState== Edit){
     currentState = Settings;
-    Encoder.setAccelerationEnabled(false);
   }
   //clear Display if needed:
   if(action!=Menu::actionLabel && currentState!= Edit)
@@ -1396,7 +1282,7 @@ void loadLastUsedProfile() {
 void setup() {
   //Debug
   Serial.begin(115200);
-  
+
   //LCD init
   tft.initR(INITR_BLACKTAB);
   tft.setTextWrap(false);
@@ -1405,50 +1291,45 @@ void setup() {
   tft.fillScreen(ST7735_WHITE);
   tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
 
-  //init rodery encoder Timer
-  encodertimer=timerBegin(1, 80, true);
-  timerAttachInterrupt(encodertimer, &encoderServices, true);
-  timerAlarmWrite(encodertimer, 1000, true);
-  timerAlarmEnable(encodertimer);
-  
-  //INIT Temps
-  pinMode(TEMP1_CS, OUTPUT);
-  pinMode(TEMP2_CS, OUTPUT);
-  Temp_1.chipSelect = TEMP1_CS;
-  Temp_2.chipSelect = TEMP2_CS;
-  
-  //init Zero crossing interrupt
-  pinMode(ZEROX, INPUT_PULLUP);
-  attachInterrupt(digitalPinToInterrupt(ZEROX), zeroCrossingDetected, CHANGE);
-  
-  //init switchPower
-  pinMode(HEATER1, OUTPUT);
-  digitalWrite(HEATER1,LOW);
-  pinMode(HEATER2, OUTPUT);
-  digitalWrite(HEATER2,LOW);
-  esp_timer_create_args_t _timerConfig;
-  _timerConfig.callback = (void (*)(void*))switchPower;
-  _timerConfig.dispatch_method = ESP_TIMER_TASK;
-  _timerConfig.name = "switchPower";
-  esp_timer_create(&_timerConfig, &SwitchPowerTimer);
-  esp_timer_start_once(SwitchPowerTimer, 1000000); //start in 1 secound!
+  //init timers
+  timer_beep.start();
+  timer_temp.start();
+  timer_dsp_btmln.start();
+  timer_display.start();
+  timer_control.start();
 
-  //beep
-  pinMode(BUZZER,OUTPUT);
-  ledcSetup(0,1000,0);
+  //init GPIOs
+  pinMode(BTN_13, INPUT);
+  pinMode(BTN_4, INPUT);
+  pinMode(BTN_3, INPUT);
+  pinMode(BTN_14, INPUT);
+  pinMode(BTN_11, INPUT);
+  pinMode(FAN1, OUTPUT);
 
-  //LEDs:
-  RGBLED.begin(RGB_CLK,RGB_SDO,RGB_SDO,0);  
-  setLEDRGBBColor(0,0,0);
-  
-  //Preferences init
-  PREF.begin("REFLOW");
-  loadLastUsedProfile();
-  loadPID();
-  
-  //init Wifi:
-  WiFi.begin();            
- 
+  digitalWrite(FAN1, 0);
+
+  btn_startstop.setTapHandler(btn_startstop_tap);
+  btn_startstop.begin(BTN_2, INPUT, false, false);
+
+  btn_up.begin(BTN_14, INPUT, false, false);
+  btn_up.setTapHandler(btn_up_tap);
+  btn_up.setReleasedHandler(btn_up_hold);
+  btn_up.setPressedHandler(btn_up_release);
+
+  btn_down.begin(BTN_4, INPUT, false, false);
+  btn_down.setTapHandler(btn_down_tap);
+  btn_down.setReleasedHandler(btn_down_hold);
+  btn_down.setPressedHandler(btn_down_release);
+
+  btn_left.begin(BTN_13, INPUT, false, false);
+  btn_left.setTapHandler(btn_left_tap);
+
+  btn_stop.begin(BTN_11, INPUT, false, false);
+  btn_stop.setTapHandler(btn_stop_tap);
+
+   //init Wifi:
+  WiFi.begin();  
+
   //init Webserver
   if (MDNS.begin("ReflowController")) {
       Serial.println("MDNS responder started");
@@ -1518,6 +1399,40 @@ void setup() {
   
   server.begin();  
   serverAction.begin();  
+
+  
+  //INIT Temps
+  pinMode(TEMP1_CS, OUTPUT);
+  Temp_1.chipSelect = TEMP1_CS;
+  
+  //init switchPower
+  pinMode(HEATER1, OUTPUT);
+
+  ledc_timer_config_t ledc_timer;
+  ledc_channel_config_t ledc_channel;
+ 
+  ledc_timer.speed_mode   = LEDC_LOW_SPEED_MODE;
+  ledc_timer.timer_num    = LEDC_TIMER_0;
+  ledc_timer.duty_resolution       = LEDC_TIMER_8_BIT;
+  ledc_timer.freq_hz      = 5;
+ 
+  ledc_channel.channel    = LEDC_CHANNEL_0;
+  ledc_channel.gpio_num   = HEATER1;
+  ledc_channel.speed_mode = LEDC_LOW_SPEED_MODE;
+  ledc_channel.timer_sel  = LEDC_TIMER_0;
+  ledc_channel.duty       = 0;
+ 
+  ledc_timer_config(&ledc_timer);
+  ledc_channel_config(&ledc_channel);
+
+  //beep
+  pinMode(BUZZER,OUTPUT);
+  ledcSetup(0,1000,0);
+ 
+  //Preferences init
+  PREF.begin("REFLOW");
+  loadLastUsedProfile();
+  loadPID();          
   
   spashscreen();
 
@@ -1527,7 +1442,7 @@ void setup() {
   myMenue.navigate(&miCycleStart);
   currentState = Settings;
   menuUpdateRequest = true;
-  
+ 
   
 }
 
@@ -1540,7 +1455,7 @@ void displayMenusInfos()
   tft.setCursor(2, 119);
   if(WiFi.status() != WL_CONNECTED)
   {                
-    tft.print("PI:Not Connnected!");      
+    tft.print("IP:Not Connnected!");      
   }
   else
   {
@@ -1554,11 +1469,120 @@ void displayMenusInfos()
   tft.print("\367C   ");
 }
 
+void btn_startstop_tap(Button2& btn)
+{
+  if (currentState < UIMenuEnd) 
+  {
+    myMenue.invoke();
+    menuUpdateRequest = true;
+  }
+  else if (currentState == Complete) 
+  { 
+    menuExit(Menu::actionDisplay); // reset to initial state
+    myMenue.navigate(&miCycleStart);
+    currentState = Settings;
+    menuUpdateRequest = true;
+  }
+  else if (currentState == CoolDown) 
+  {
+    currentState = Complete;
+  }
+  else if (currentState > UIMenuEnd) 
+  {
+    currentState = CoolDown;
+  }
+}
+
+void btn_up_hold(Button2 &btn)
+{
+  countup = true;
+  timer_countupdown.start();
+}
+
+void btn_up_release(Button2 &btn)
+{
+  countup = false;
+  timer_countupdown.stop();
+  timer_countupdown.reset();
+}
+
+void btn_up_tap(Button2 &btn)
+{
+  encAbsolute -= 1;
+  if (currentState == Settings)
+  {
+    myMenue.navigate(myMenue.getPrev());
+    menuUpdateRequest = true;
+  }
+  else if (currentState == Edit)
+  {
+    if (myMenue.currentItem != &Menu::NullItem)
+    {
+      myMenue.executeCallbackAction(Menu::actionDisplay);
+    }
+  }
+}
+
+void btn_down_hold(Button2 &btn)
+{
+  countdown = true;
+  timer_countupdown.start();
+}
+
+void btn_down_release(Button2 &btn)
+{
+  countdown = false;
+  timer_countupdown.stop();
+  timer_countupdown.reset();
+}
+
+
+void btn_down_tap(Button2 &btn)
+{
+  encAbsolute += 1;
+  if (currentState == Settings)
+  {
+    myMenue.navigate(myMenue.getNext());
+    menuUpdateRequest = true;
+  }
+  else if (currentState == Edit)
+  {
+    if (myMenue.currentItem != &Menu::NullItem)
+    {
+      myMenue.executeCallbackAction(Menu::actionDisplay);
+    }
+  }
+}
+
+void btn_stop_tap(Button2& btn)
+{
+  reportError("E-Stop");
+}
+
+void btn_left_tap(Button2& btn)
+{
+  Serial.println("DClick");
+  Serial.print("currentState: ");
+  Serial.println(currentState);
+  Serial.print("myMenue.getParent(): ");
+  Serial.println((uint32_t)myMenue.getParent());
+  Serial.print("&miExit: ");
+  Serial.println((uint32_t)&miExit);
+  if (currentState == Edit)
+  {
+    myMenue.executeCallbackAction(Menu::actionParent);
+  }
+  else if (currentState < UIMenuEnd && myMenue.getParent() != &miExit)
+  {
+    tft.fillScreen(ST7735_WHITE);
+    displayMenusInfos();
+    myMenue.navigate(myMenue.getParent());
+    menuUpdateRequest = true;
+  }
+}
 void loop()
 {
   uint64_t time_ms = esp_timer_get_time()/1000;
-  static uint64_t lastrecalczerrox=time_ms;
-  static uint64_t lastzeroCrossingCalc=time_ms;
   static uint64_t lastbeep=time_ms;
   static uint64_t lastreadTemp=time_ms;
   static uint64_t lastRGBupdate=time_ms;
@@ -1575,105 +1599,47 @@ void loop()
   serverAction.handleClient();  
 
   // --------------------------------------------------------------------------
-  // Calc new Zero crossing time point
+  // Button counting
   //
-  if(time_ms >= (lastrecalczerrox + RECAL_ZEROX_TIME_MS))
+  btn_startstop.loop();
+  btn_up.loop();
+  btn_down.loop();
+  btn_left.loop();
+  btn_stop.loop();
+
+  if (countdown)
   {
-    lastrecalczerrox = time_ms;
-    boolean error=false;
-    uint8_t pointer = zeroCrossingTimesPointer;
-
-    //look at the last 10 crossings 
-    pointer = (pointer - 20) & 0x1F; 
-
-    if(zeroCrossingTimes[pointer] < (esp_timer_get_time()-10*11*1000))
+    if (timer_countupdown.done())
     {
-      error=true;
-      #ifndef NOEDGEERRORREPORT
-        Serial.println("No Edge detection!");        
-      #endif
+      encAbsolute += 2;
+      menuUpdateRequest = true;
+      if ((myMenue.currentItem != &Menu::NullItem) && (currentState == Edit))
+      {
+        myMenue.executeCallbackAction(Menu::actionDisplay);
+      }
+      timer_countupdown.reset();
+      timer_countupdown.start();
     }
-    if(error==false)
-    {  
-      if((zeroCrossingTimes[(pointer+1)&0x1F] - zeroCrossingTimes[pointer]) > 5000) //syn
-      {
-        pointer = (pointer - 1) & 0x1F;
-      }
-      for (uint8_t i=0; i<19;i++)
-      {
-        uint32_t delta = zeroCrossingTimes[(pointer+i+1)&0x1F] - zeroCrossingTimes[(pointer+i)&0x1F];
-        if(((delta>5000) && (i%2!=1)) || ((delta<5000) && (i%2!=0)))
-        {
-          error=true;
-          Serial.println("Mssing Edge detection!");
-          break;
-        }    
-      }
-      if(error==false)
-      {
-        //calc average duration:
-        uint32_t duration=(zeroCrossingTimes[(pointer+19)&0x1F]-zeroCrossingTimes[(pointer-1)&0x1F])/10;
-        if(duration>11000 || duration<7000) 
-        {
-          error=true;
-          Serial.println("Duration not OK! Missing edges?");
-        }
-        if(error==false)
-        {
-          //calc zero crossing point:
-          uint32_t xpoint=0;
-          for (uint8_t i=0; i<20;i+=2)
-          {
-            uint64_t a = zeroCrossingTimes[(pointer+i)&0x1F];
-            uint64_t b = zeroCrossingTimes[(pointer+i+1)&0x1F];
-            xpoint+=((a+b)/2)%duration;
-            
-          }      
-          xpoint=xpoint/10;
-          for (uint8_t i=0; i<20;i+=2)
-          {
-            int64_t a = zeroCrossingTimes[(pointer+i)&0x1F];
-            int64_t b = zeroCrossingTimes[(pointer+i+1)&0x1F];
-            if(abs((((a+b)/2)%duration)-xpoint)>200) //200us jitter is ok
-            {
-              error=true;
-              Serial.println("Edgededection jitter to HIGH!");
-              break;
-            }
-          }     
-          if(error==false){
-            lastzeroCrossingCalc=time_ms;
-            portENTER_CRITICAL(&ZeroCrossingMutex);
-            zeroCrossingDuration=duration;
-            zeroCrossingPoint=xpoint;
-            portEXIT_CRITICAL(&ZeroCrossingMutex);
-
-            /*
-            Serial.print(" ");
-            for(int i = 0; i < (duration%10) ; i++)
-              Serial.print("\t");
-            Serial.println(xpoint);
-            */
-          }
-        }          
-      }
-    }        
   }
 
-  // --------------------------------------------------------------------------
-  // Report Zero Crossing error
-  //
-  if(time_ms >= (lastzeroCrossingCalc + ZEROX_TIMEOUT_MS))
+  if (countup)
   {
-    #ifndef NOEDGEERRORREPORT
-      reportError("Zero Crossing Detection Timeout!");
-    #endif
+    if (timer_countupdown.done())
+    {
+      encAbsolute -= 2;
+      if ((myMenue.currentItem != &Menu::NullItem) && (currentState == Edit))
+      {
+        myMenue.executeCallbackAction(Menu::actionDisplay);
+      }
+      menuUpdateRequest = true;
+      timer_countupdown.reset();
+      timer_countupdown.start();
+    }
   }
-
   // --------------------------------------------------------------------------
   // Do the beep if needed
   //
-  if(time_ms >= (lastbeep + 500))
+  if(timer_beep.repeat())
   {
     static boolean isbeeping=false;
     lastbeep=time_ms;
@@ -1682,8 +1648,8 @@ void loop()
       if(beepcount > 0)
       {
         beepcount--;
-        ledcAttachPin(BUZZER, 0);
-        ledcWriteTone(0, 1000);
+        //ledcAttachPin(BUZZER, 0);
+        ledcWriteTone(0, 6000);
         isbeeping=true;
       }
     }
@@ -1697,11 +1663,10 @@ void loop()
   // --------------------------------------------------------------------------
   // Temp messurment and averageing
   //
-  if(time_ms >= (lastreadTemp + READ_TEMP_INTERVAL_MS))
+  if(timer_temp.repeat())
   {
     lastreadTemp+=READ_TEMP_INTERVAL_MS; //interval should be regularly
     readThermocouple(&Temp_1);
-    //readThermocouple(&Temp_2);
 
 
     static float average[READ_TEMP_AVERAGE_COUNT];
@@ -1725,22 +1690,22 @@ void loop()
       }
     }
     
-    if (state_count>READ_TEMP_AVERAGE_COUNT/2) {
-        switch (stat) {
-          case 0b001:
-            reportError("Temp Sensor 1: Open Circuit");
-            break;
-          case 0b010:
-            reportError("Temp Sensor 1: GND Short");
-            break;
-          case 0b100:
-            reportError("Temp Sensor 1: VCC Short");
-            break;
-          default:
-            reportError("Temp Sensor 1: Multiple errors!");
-            break;
-        }
-    }
+    // if (state_count>READ_TEMP_AVERAGE_COUNT/2) {
+    //     switch (stat) {
+    //       case 0b001:
+    //         reportError("Temp Sensor 1: Open Circuit");
+    //         break;
+    //       case 0b010:
+    //         reportError("Temp Sensor 1: GND Short");
+    //         break;
+    //       case 0b100:
+    //         reportError("Temp Sensor 1: VCC Short");
+    //         break;
+    //       default:
+    //         reportError("Temp Sensor 1: Multiple errors!");
+    //         break;
+    //     }
+    // }
 
     aktSystemTemperature = sum/READ_TEMP_AVERAGE_COUNT;
 
@@ -1758,88 +1723,17 @@ void loop()
   // --------------------------------------------------------------------------
   // Show temp as RGB color and print display buttom line
   //
-  if(time_ms >= (lastRGBupdate + 1000))
+  if(timer_dsp_btmln.repeat())
   {
     lastRGBupdate=time_ms;
 
     float t=(300-aktSystemTemperature)/300.0/2;
-    setLEDRGBBColor(RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t+0.33 ),RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t ),RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t-0.33 ));
+    // setLEDRGBBColor(RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t+0.33 ),RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t ),RGB_LED_BRITHNESS_1TO255 * Hue_2_RGB( 0, 1, t-0.33 ));
     
     if (currentState < UIMenuEnd) 
     {
       displayMenusInfos();
     }
-  }
-
-  // --------------------------------------------------------------------------
-  // handle encoder rotation
-  //
-  if(time_ms >= (lastreadencoder + 10))
-  {
-    lastreadencoder=time_ms;
-    int16_t encMovement = Encoder.getValue();
-    if (encMovement) 
-    {
-      encAbsolute += encMovement;
-      if (currentState == Settings) 
-      {
-        myMenue.navigate((encMovement > 0) ? myMenue.getNext() : myMenue.getPrev());
-        menuUpdateRequest = true;
-      }
-      else if (currentState == Edit) 
-      {
-        if (myMenue.currentItem != &Menu::NullItem) 
-        {
-          myMenue.executeCallbackAction(Menu::actionDisplay);      
-        }        
-      }
-    }
-
-  }
-  // --------------------------------------------------------------------------
-  // handle encoder button press
-  //
-  switch (Encoder.getButton()) 
-  {
-    case ClickEncoder::Clicked:
-      if (currentState < UIMenuEnd) 
-      {
-        myMenue.invoke();
-        menuUpdateRequest = true;
-      }
-      else if (currentState == Complete) 
-      { 
-        menuExit(Menu::actionDisplay); // reset to initial state
-        myMenue.navigate(&miCycleStart);
-        currentState = Settings;
-        menuUpdateRequest = true;
-      }
-      else if (currentState == CoolDown) 
-      {
-        currentState = Complete;
-      }
-      else if (currentState > UIMenuEnd) 
-      {
-        currentState = CoolDown;
-      }
-      break;
-    case ClickEncoder::DoubleClicked:
-      Serial.println("DClick");
-      Serial.print("currentState: ");Serial.println(currentState);
-      Serial.print("myMenue.getParent(): ");Serial.println((uint32_t)myMenue.getParent());
-      Serial.print("&miExit: ");Serial.println((uint32_t)&miExit);
-      if (currentState == Edit) 
-      {
-        myMenue.executeCallbackAction(Menu::actionParent);      
-      }
-      else if (currentState < UIMenuEnd && myMenue.getParent() != &miExit) 
-      {
-        tft.fillScreen(ST7735_WHITE);
-        displayMenusInfos();
-        myMenue.navigate(myMenue.getParent());
-        menuUpdateRequest = true;
-      }
-      break;
   }
 
   // --------------------------------------------------------------------------
@@ -1868,9 +1762,8 @@ void loop()
   // --------------------------------------------------------------------------
   // update Display
   //
-  if(time_ms >= (lastDisplayUpdate + 1000))
+  if(timer_display.repeat())
   {
-    lastDisplayUpdate=time_ms;
     if (currentState > UIMenuEnd) {
       uint64_t dtime=esp_timer_get_time();
       updateProcessDisplay();
@@ -1885,9 +1778,8 @@ void loop()
   // --------------------------------------------------------------------------
   // control loop
   //
-  if(time_ms >= (lastControlloopupdate + 100))
+  if(timer_control.repeat())
   {
-    lastControlloopupdate+=100; 
 
     static State previousState= Idle;
     static uint64_t stateChangedTime_ms=time_ms;
@@ -2059,6 +1951,20 @@ void loop()
     else
     {
       powerHeater =0;
+    }
+
+    // Set SCR PWM to powerHeater
+    //ledcWrite(SCR_PWM_CHANNEL, powerHeater);
+    ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, powerHeater);
+    ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
+
+    if (powerHeater > 0)
+    {
+      digitalWrite(FAN1, 1);
+    }
+    else
+    {
+      digitalWrite(FAN1, 0);
     }
   }
 
