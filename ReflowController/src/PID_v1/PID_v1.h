@@ -50,6 +50,10 @@ class PID
 	float GetKd();						  // where it's important to know what is actually 
 	int GetMode();						  //  inside the PID.
 	int GetDirection();					  //
+	float GetLastP();
+	float GetLastI();
+	float GetLastD();
+	float GetLastOutput();
 
   private:
 	void Initialize();
@@ -71,10 +75,10 @@ class PID
 			  
 	unsigned long lastTime;
 	float ITerm, lastInput;
+	float lastP, lastI, lastD, lastOutput;
 
 	unsigned long SampleTime;
 	float outMin, outMax;
 	bool inAuto;
 };
 #endif
-

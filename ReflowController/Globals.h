@@ -70,6 +70,8 @@
 #define ZEROX_TIMEOUT_MS 5000
 #define READ_TEMP_INTERVAL_MS 250
 #define READ_TEMP_AVERAGE_COUNT 1
+#define READ_TEMP_RAMP_WINDOW_MS 5000
+#define INTEGRAL_ENABLE_BAND_DEFAULT_C 20.0f
 
 #define RGB_LED_BRITHNESS_1TO255  125
 #define IDLE_TEMP     50
@@ -181,6 +183,9 @@ extern volatile bool pidTuningsDirty;
 
 extern float aktSystemTemperature;
 extern float aktSystemTemperatureRamp; //°C/s
+extern float pidOutP;
+extern float pidOutI;
+extern float pidOutD;
 
 extern int16_t tuningHeaterOutput;
 extern int16_t tuningNoiseBand;
@@ -193,6 +198,7 @@ extern float inertiaGuardHysteresisC;
 extern float inertiaGuardMinRiseCps;
 extern float inertiaGuardMaxSetpointC;
 extern float constTempRampCps;
+extern float integralEnableBandC;
 
 extern int activeProfileId;
 extern Profile_t activeProfile; // the one and only instance
@@ -244,6 +250,7 @@ extern Menu::Item_t miGuardHyst;
 extern Menu::Item_t miGuardRise;
 extern Menu::Item_t miGuardMax;
 extern Menu::Item_t miConstSlew;
+extern Menu::Item_t miIntegralBand;
 extern Menu::Item_t miManual;
 extern Menu::Item_t miIODebug;
 extern Menu::Item_t miWIFI;

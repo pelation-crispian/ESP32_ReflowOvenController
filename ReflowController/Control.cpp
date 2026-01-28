@@ -1,4 +1,5 @@
 #include "Control.h"
+#include <math.h>
 #include "Ui.h"
 #include "src/PID_v1/PID_v1.h"
 #include "src/PID_AutoTune_v0/PID_AutoTune_v0.h"
@@ -78,6 +79,8 @@ void controlUpdate(uint64_t time_ms) {
   static float coolDownStartTemp;
   static float constTempRampedSetpoint;
   static uint64_t constTempRampTime_ms = 0;
+  static uint64_t constTempStart_ms = 0;
+  static bool integralSuppressed = false;
   bool paused = systemPaused;
 
   if (paused) {
@@ -102,7 +105,11 @@ void controlUpdate(uint64_t time_ms) {
   wasPaused = paused;
 
   if (pidTuningsDirty) {
-    heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
+    float effectiveKi = heaterPID.Ki;
+    if (currentState == ConstantTemp && integralSuppressed) {
+      effectiveKi = 0.0f;
+    }
+    heaterPidController.SetTunings(heaterPID.Kp, effectiveKi, heaterPID.Kd);
     pidTuningsDirty = false;
   }
 
@@ -118,6 +125,7 @@ void controlUpdate(uint64_t time_ms) {
         rampToSoakStartTemp=aktSystemTemperature;
         heaterSetpoint = rampToSoakStartTemp;
 
+        heaterOutput = 0;
         heaterPidController.SetMode(AUTOMATIC);
         heaterPidController.SetControllerDirection(DIRECT);
         heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
@@ -162,9 +170,17 @@ void controlUpdate(uint64_t time_ms) {
     case ConstantTemp:
       if (stateChanged) 
       {
+        // Avoid resetting the PID integral by zeroing output before AUTO init.
         heaterPidController.SetMode(AUTOMATIC);
         heaterPidController.SetControllerDirection(DIRECT);
-        heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
+        const float error = (float)constantTempSetpoint - aktSystemTemperature;
+        constTempStart_ms = time_ms;
+        integralSuppressed = (time_ms - constTempStart_ms) < 10000 ||
+                             ((integralEnableBandC > 0.0f) &&
+                              (fabsf(error) > integralEnableBandC));
+        const float effectiveKi = integralSuppressed ? 0.0f : heaterPID.Ki;
+        heaterPidController.SetTunings(heaterPID.Kp, effectiveKi, heaterPID.Kd);
+        heaterOutput = 0;
         constantTempBeeped = false;
         // Start slew-limited setpoint from the current temperature to avoid a large step.
         constTempRampedSetpoint = aktSystemTemperature;
@@ -195,6 +211,18 @@ void controlUpdate(uint64_t time_ms) {
         }
         heaterSetpoint = constTempRampedSetpoint;
       }
+      {
+        const float error = heaterSetpoint - heaterInput;
+        const bool suppressIntegral =
+          (time_ms - constTempStart_ms) < 10000 ||
+          ((integralEnableBandC > 0.0f) && (fabsf(error) > integralEnableBandC));
+        if (suppressIntegral != integralSuppressed) {
+          integralSuppressed = suppressIntegral;
+          const float effectiveKi = integralSuppressed ? 0.0f : heaterPID.Ki;
+          heaterPidController.SetTunings(heaterPID.Kp, effectiveKi, heaterPID.Kd);
+        }
+      }
+
       if (!constantTempBeeped && constantTempBeepMinutes > 0 &&
           (time_ms - stateChangedTime_ms) >= (uint32_t)constantTempBeepMinutes * 60 * 1000) {
         beepcount = 3;
@@ -284,11 +312,13 @@ void controlUpdate(uint64_t time_ms) {
   if (!paused) {
     // Only apply the guard in steady setpoint states so we don't distort ramp segments.
     static bool inertiaHold = false;
+    const bool inertiaGuardEnabled = true;
     const bool inertiaGuardState =
       currentState == ConstantTemp ||
       currentState == Soak ||
       currentState == Peak;
-    if (inertiaGuardLeadSec > 0.0f &&
+    if (inertiaGuardEnabled &&
+        inertiaGuardLeadSec > 0.0f &&
         inertiaGuardMaxSetpointC > 0.0f &&
         inertiaGuardState &&
         heaterSetpoint <= inertiaGuardMaxSetpointC) {
@@ -299,13 +329,10 @@ void controlUpdate(uint64_t time_ms) {
         if (aktSystemTemperatureRamp > inertiaGuardMinRiseCps &&
             predictedTemp >= heaterSetpoint) {
           inertiaHold = true;
-          heaterPidController.SetMode(MANUAL);
-          heaterOutput = 0;
         }
       } else {
         // Leave hold once we're safely below the setpoint prediction band.
         if (predictedTemp <= heaterSetpoint - inertiaGuardHysteresisC) {
-          heaterPidController.SetMode(AUTOMATIC);
           inertiaHold = false;
         }
         heaterOutput = 0;
@@ -326,9 +353,16 @@ void controlUpdate(uint64_t time_ms) {
       inertiaHold = false;
     }
 
-    heaterPidController.Compute();
+    if (!inertiaHold && heaterPidController.Compute()) {
+      pidOutP = heaterPidController.GetLastP();
+      pidOutI = heaterPidController.GetLastI();
+      pidOutD = heaterPidController.GetLastD();
+    }
   } else {
     heaterOutput = 0;
+    pidOutP = 0;
+    pidOutI = 0;
+    pidOutD = 0;
   }
 
   if (paused) {

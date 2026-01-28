@@ -76,11 +76,21 @@ void sensorsUpdate() {
 
   aktSystemTemperature = sum/READ_TEMP_AVERAGE_COUNT;
 
-  static float averagees[1000/READ_TEMP_INTERVAL_MS];
+  static float averagees[READ_TEMP_RAMP_WINDOW_MS / READ_TEMP_INTERVAL_MS];
   static uint16_t p=0;
+  static bool rampInit=false;
 
-  aktSystemTemperatureRamp = aktSystemTemperature - averagees[p];
+  if (!rampInit) {
+    for (uint16_t i = 0; i < (READ_TEMP_RAMP_WINDOW_MS / READ_TEMP_INTERVAL_MS); i++) {
+      averagees[i] = aktSystemTemperature;
+    }
+    aktSystemTemperatureRamp = 0.0f;
+    rampInit = true;
+  } else {
+    const float window_s = (float)READ_TEMP_RAMP_WINDOW_MS / 1000.0f;
+    aktSystemTemperatureRamp = (aktSystemTemperature - averagees[p]) / window_s;
+  }
 
   averagees[p]=aktSystemTemperature;
-  p=(p+1)%(1000/READ_TEMP_INTERVAL_MS);
+  p=(p+1)%(READ_TEMP_RAMP_WINDOW_MS / READ_TEMP_INTERVAL_MS);
 }

@@ -409,9 +409,9 @@ const char ROOT_HTML[] PROGMEM = R"=====(
           document.getElementById('profile-ramp-up').value = data.profile.rampUpRate;
           document.getElementById('profile-ramp-down').value = data.profile.rampDownRate;
 
-          document.getElementById('pid-kp').value = data.pid.kp;
-          document.getElementById('pid-ki').value = data.pid.ki;
-          document.getElementById('pid-kd').value = data.pid.kd;
+          document.getElementById('pid-kp').value = Number(data.pid.kp).toFixed(3);
+          document.getElementById('pid-ki').value = Number(data.pid.ki).toFixed(3);
+          document.getElementById('pid-kd').value = Number(data.pid.kd).toFixed(3);
 
           document.getElementById('const-setpoint').value = data.constTemp.setpoint;
           document.getElementById('const-beep').value = data.constTemp.beepMinutes;
@@ -425,6 +425,7 @@ const char ROOT_HTML[] PROGMEM = R"=====(
           document.getElementById('guard-rise').value = data.control.guardMinRiseCps;
           document.getElementById('guard-max').value = data.control.guardMaxSetpointC;
           document.getElementById('const-slew').value = data.control.constSlewCps;
+          document.getElementById('integral-band').value = data.control.integralBandC;
 
           const fanValue = data.fanOverride === 1 ? 'on' : (data.fanOverride === 0 ? 'off' : 'auto');
           document.getElementById('fan-override').value = fanValue;
@@ -444,6 +445,12 @@ const char ROOT_HTML[] PROGMEM = R"=====(
           const beep = document.getElementById('const-beep').value;
           apiGet('/api/consttemp?setpoint=' + sp + '&beepMinutes=' + beep).then(loadSettings);
         };
+        document.querySelectorAll('.btn-beep-preset').forEach(btn => {
+          btn.onclick = () => {
+            const minutes = btn.getAttribute('data-min');
+            document.getElementById('const-beep').value = minutes;
+          };
+        });
 
         document.getElementById('btn-manual-apply').onclick = () => {
           const power = document.getElementById('manual-power').value;
@@ -504,7 +511,8 @@ const char ROOT_HTML[] PROGMEM = R"=====(
             guardHystC: document.getElementById('guard-hyst').value,
             guardMinRiseCps: document.getElementById('guard-rise').value,
             guardMaxSetpointC: document.getElementById('guard-max').value,
-            constSlewCps: document.getElementById('const-slew').value
+            constSlewCps: document.getElementById('const-slew').value,
+            integralBandC: document.getElementById('integral-band').value
           });
           apiGet('/api/control?' + params.toString()).then(loadSettings);
         };
@@ -580,6 +588,13 @@ const char ROOT_HTML[] PROGMEM = R"=====(
                 <input id="const-beep" type="number" min="0" max="720" step="1" />
               </div>
               <div class="inline">
+                <button class="secondary btn-beep-preset" data-min="60">1 hr</button>
+                <button class="secondary btn-beep-preset" data-min="120">2 hr</button>
+                <button class="secondary btn-beep-preset" data-min="240">4 hr</button>
+                <button class="secondary btn-beep-preset" data-min="480">8 hr</button>
+                <button class="secondary btn-beep-preset" data-min="1440">24 hr</button>
+              </div>
+              <div class="inline">
                 <button id="btn-const-apply">Apply Constant Temp</button>
               </div>
               <div></div>
@@ -653,7 +668,7 @@ const char ROOT_HTML[] PROGMEM = R"=====(
             <div class="controls-grid">
               <div>
                 <label>Kp</label>
-                <input id="pid-kp" type="number" step="0.01" />
+                <input id="pid-kp" type="number" step="0.001" />
               </div>
               <div>
                 <label>Ki</label>
@@ -661,7 +676,7 @@ const char ROOT_HTML[] PROGMEM = R"=====(
               </div>
               <div>
                 <label>Kd</label>
-                <input id="pid-kd" type="number" step="0.01" />
+                <input id="pid-kd" type="number" step="0.001" />
               </div>
               <div class="inline">
                 <button id="btn-pid-save">Save PID</button>
@@ -704,6 +719,10 @@ const char ROOT_HTML[] PROGMEM = R"=====(
               <div>
                 <label>Const Slew (°C/s)</label>
                 <input id="const-slew" type="number" min="0" max="20" step="0.01" />
+              </div>
+              <div>
+                <label>I Band (°C)</label>
+                <input id="integral-band" type="number" min="0" max="200" step="0.01" />
               </div>
               <div class="inline">
                 <button id="btn-control-save">Save Guard</button>

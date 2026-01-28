@@ -70,23 +70,28 @@ static void handleAction();
 static bool isManualMode();
 static bool isRunState();
 static bool allowSettingsChange();
+static bool allowConstTempChange();
 void saveLastUsedProfile();
 void loadLastUsedProfile();
 
 float aktSystemTemperature;
 float aktSystemTemperatureRamp; //°C/s
+float pidOutP;
+float pidOutI;
+float pidOutD;
 
 int16_t tuningHeaterOutput=30;
 int16_t tuningNoiseBand=1;
 int16_t tuningOutputStep=10;
 int16_t tuningLookbackSec=60;
 int16_t constantTempSetpoint=60;
-int16_t constantTempBeepMinutes=20;
+int16_t constantTempBeepMinutes=0;
 float inertiaGuardLeadSec = INERTIA_GUARD_LEAD_DEFAULT_SEC;
 float inertiaGuardHysteresisC = INERTIA_GUARD_HYST_DEFAULT_C;
 float inertiaGuardMinRiseCps = INERTIA_GUARD_MIN_RISE_DEFAULT_CPS;
 float inertiaGuardMaxSetpointC = INERTIA_GUARD_MAX_SETPOINT_DEFAULT_C;
 float constTempRampCps = CONST_TEMP_SLEW_DEFAULT_CPS;
+float integralEnableBandC = INTEGRAL_ENABLE_BAND_DEFAULT_C;
 
 
 int activeProfileId = 0;
@@ -429,6 +434,7 @@ static String makeSettingsJson() {
   json += ",\"guardMinRiseCps\":" + String(inertiaGuardMinRiseCps, 2);
   json += ",\"guardMaxSetpointC\":" + String(inertiaGuardMaxSetpointC, 2);
   json += ",\"constSlewCps\":" + String(constTempRampCps, 2);
+  json += ",\"integralBandC\":" + String(integralEnableBandC, 2);
   json += "}";
   json += ",\"fanOverride\":" + String(fanOverride);
   json += "}";
@@ -556,7 +562,7 @@ static void handlePidUpdate() {
 }
 
 static void handleConstTempUpdate() {
-  if (!allowSettingsChange()) {
+  if (!allowConstTempChange()) {
     sendJson(server, "{\"ok\":false,\"error\":\"busy\"}");
     return;
   }
@@ -643,6 +649,10 @@ static void handleControlUpdate() {
   }
   if (server.hasArg("constSlewCps")) {
     constTempRampCps = server.arg("constSlewCps").toFloat();
+    changed = true;
+  }
+  if (server.hasArg("integralBandC")) {
+    integralEnableBandC = server.arg("integralBandC").toFloat();
     changed = true;
   }
   if (changed) {
@@ -793,6 +803,14 @@ static bool isRunState() {
 }
 
 static bool allowSettingsChange() {
+  if (systemPaused) return false;
+  if (isRunState()) return false;
+  if (isManualMode()) return false;
+  return true;
+}
+
+static bool allowConstTempChange() {
+  if (currentState == ConstantTemp) return true;
   if (systemPaused) return false;
   if (isRunState()) return false;
   if (isManualMode()) return false;

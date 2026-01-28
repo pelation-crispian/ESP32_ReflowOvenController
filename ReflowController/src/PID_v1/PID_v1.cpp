@@ -35,6 +35,10 @@ PID::PID(float* Input, float* Output, float* Setpoint,
     PID::SetTunings(Kp, Ki, Kd);
 
     lastTime = millis()-SampleTime;				
+    lastP = 0;
+    lastI = 0;
+    lastD = 0;
+    lastOutput = 0;
 }
  
  
@@ -60,11 +64,15 @@ bool PID::Compute()
       float dInput = (input - lastInput);
  
       /*Compute PID Output*/
-      float output = kp * error + ITerm- kd * dInput;
+      lastP = kp * error;
+      lastI = ITerm;
+      lastD = -kd * dInput;
+      float output = lastP + lastI + lastD;
       
 	  if(output > outMax) output = outMax;
       else if(output < outMin) output = outMin;
 	  *myOutput = output;
+	  lastOutput = output;
 	  
       /*Remember some variables for next time*/
       lastInput = input;
@@ -192,4 +200,7 @@ float PID::GetKi(){ return  dispKi;}
 float PID::GetKd(){ return  dispKd;}
 int PID::GetMode(){ return  inAuto ? AUTOMATIC : MANUAL;}
 int PID::GetDirection(){ return controllerDirection;}
-
+float PID::GetLastP(){ return lastP; }
+float PID::GetLastI(){ return lastI; }
+float PID::GetLastD(){ return lastD; }
+float PID::GetLastOutput(){ return lastOutput; }
