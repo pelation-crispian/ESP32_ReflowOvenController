@@ -6,6 +6,9 @@
 static PID heaterPidController(&heaterInput, &heaterOutput, &heaterSetpoint, heaterPID.Kp, heaterPID.Ki, heaterPID.Kd, DIRECT);
 static PID_ATune heaterPidTune(&heaterInput, &heaterOutput);
 
+// Predictive inertia guard to reduce overshoot on high-thermal-mass ovens at low setpoints.
+// Tunables are exposed in the PID menu and stored in NVS.
+
 const char * currentStateToString()
 {
   #define casePrintState(state) case state: return #state;
@@ -16,6 +19,7 @@ const char * currentStateToString()
     casePrintState(Peak);
     casePrintState(CoolDown);
     casePrintState(Complete);
+    casePrintState(ConstantTemp);
     casePrintState(PreTune);
     casePrintState(Tune);
     default: return "Idle";
@@ -45,6 +49,9 @@ void controlInit() {
  
   ledc_timer_config(&ledc_timer);
   ledc_channel_config(&ledc_channel);
+
+  // Match PID compute rate to temperature sampling interval.
+  heaterPidController.SetSampleTime(READ_TEMP_INTERVAL_MS);
 }
 
 void controlUpdate(uint64_t time_ms) {
@@ -54,20 +61,56 @@ void controlUpdate(uint64_t time_ms) {
 
   static State previousState= Idle;
   static uint64_t stateChangedTime_ms=time_ms;
+  static bool wasPaused = false;
+  static uint64_t pauseStart_ms = 0;
+  static bool constantTempBeeped=false;
   boolean stateChanged=false;
   if (currentState != previousState) 
   {
     stateChangedTime_ms=time_ms;
     stateChanged = true;
     previousState = currentState;
+    if (currentState != ConstantTemp) {
+      constantTempBeeped = false;
+    }
   }
   static float rampToSoakStartTemp;
   static float coolDownStartTemp;
-  
+  static float constTempRampedSetpoint;
+  static uint64_t constTempRampTime_ms = 0;
+  bool paused = systemPaused;
+
+  if (paused) {
+    if (!wasPaused) {
+      pauseStart_ms = time_ms;
+      heaterPidController.SetMode(MANUAL);
+    } else {
+      uint64_t pauseDelta_ms = time_ms - pauseStart_ms;
+      if (pauseDelta_ms > 0) {
+        stateChangedTime_ms += pauseDelta_ms;
+        cycleStartTime += pauseDelta_ms * 1000ULL;
+        if (currentState == ConstantTemp) {
+          constTempRampTime_ms += pauseDelta_ms;
+        }
+        pauseStart_ms = time_ms;
+      }
+    }
+  } else if (wasPaused) {
+    heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
+    heaterPidController.SetMode(AUTOMATIC);
+  }
+  wasPaused = paused;
+
+  if (pidTuningsDirty) {
+    heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
+    pidTuningsDirty = false;
+  }
+
   heaterInput = aktSystemTemperature; 
 
-  switch (currentState) 
-  {
+  if (!paused) {
+    switch (currentState) 
+    {
     case RampToSoak:
       if (stateChanged) 
       {
@@ -114,6 +157,48 @@ void controlUpdate(uint64_t time_ms) {
 
       if (time_ms - stateChangedTime_ms >= (uint32_t)activeProfile.peakDuration * 1000) {
         currentState = CoolDown;
+      }
+      break;
+    case ConstantTemp:
+      if (stateChanged) 
+      {
+        heaterPidController.SetMode(AUTOMATIC);
+        heaterPidController.SetControllerDirection(DIRECT);
+        heaterPidController.SetTunings(heaterPID.Kp, heaterPID.Ki, heaterPID.Kd);
+        constantTempBeeped = false;
+        // Start slew-limited setpoint from the current temperature to avoid a large step.
+        constTempRampedSetpoint = aktSystemTemperature;
+        constTempRampTime_ms = time_ms;
+      }
+
+      // Slew the setpoint to reduce integral windup and overshoot on high-inertia ovens.
+      if (constTempRampCps <= 0.0f) {
+        heaterSetpoint = constantTempSetpoint;
+      } else {
+        if (constTempRampTime_ms == 0) {
+          constTempRampTime_ms = time_ms;
+          constTempRampedSetpoint = aktSystemTemperature;
+        }
+        const float dt_s = (time_ms - constTempRampTime_ms) / 1000.0f;
+        if (dt_s > 0.0f) {
+          const float target = (float)constantTempSetpoint;
+          const float maxStep = constTempRampCps * dt_s;
+          const float delta = target - constTempRampedSetpoint;
+          if (delta > maxStep) {
+            constTempRampedSetpoint += maxStep;
+          } else if (delta < -maxStep) {
+            constTempRampedSetpoint -= maxStep;
+          } else {
+            constTempRampedSetpoint = target;
+          }
+          constTempRampTime_ms = time_ms;
+        }
+        heaterSetpoint = constTempRampedSetpoint;
+      }
+      if (!constantTempBeeped && constantTempBeepMinutes > 0 &&
+          (time_ms - stateChangedTime_ms) >= (uint32_t)constantTempBeepMinutes * 60 * 1000) {
+        beepcount = 3;
+        constantTempBeeped = true;
       }
       break;
 
@@ -193,15 +278,67 @@ void controlUpdate(uint64_t time_ms) {
       }
 
       break;
+    }
   }
 
-  heaterPidController.Compute();
+  if (!paused) {
+    // Only apply the guard in steady setpoint states so we don't distort ramp segments.
+    static bool inertiaHold = false;
+    const bool inertiaGuardState =
+      currentState == ConstantTemp ||
+      currentState == Soak ||
+      currentState == Peak;
+    if (inertiaGuardLeadSec > 0.0f &&
+        inertiaGuardMaxSetpointC > 0.0f &&
+        inertiaGuardState &&
+        heaterSetpoint <= inertiaGuardMaxSetpointC) {
+      const float predictedTemp =
+        aktSystemTemperature + (aktSystemTemperatureRamp * inertiaGuardLeadSec);
+      if (!inertiaHold) {
+        // Enter hold when the predicted temperature crosses the setpoint while rising.
+        if (aktSystemTemperatureRamp > inertiaGuardMinRiseCps &&
+            predictedTemp >= heaterSetpoint) {
+          inertiaHold = true;
+          heaterPidController.SetMode(MANUAL);
+          heaterOutput = 0;
+        }
+      } else {
+        // Leave hold once we're safely below the setpoint prediction band.
+        if (predictedTemp <= heaterSetpoint - inertiaGuardHysteresisC) {
+          heaterPidController.SetMode(AUTOMATIC);
+          inertiaHold = false;
+        }
+        heaterOutput = 0;
+      }
+    } else {
+      // If we were holding and the state changed, restore automatic control cleanly.
+      if (inertiaHold) {
+        const bool shouldBeAuto =
+          currentState == RampToSoak ||
+          currentState == Soak ||
+          currentState == RampUp ||
+          currentState == Peak ||
+          currentState == ConstantTemp;
+        if (shouldBeAuto) {
+          heaterPidController.SetMode(AUTOMATIC);
+        }
+      }
+      inertiaHold = false;
+    }
 
-  if (
+    heaterPidController.Compute();
+  } else {
+    heaterOutput = 0;
+  }
+
+  if (paused) {
+    powerHeater = 0;
+  } else if (
        currentState == RampToSoak ||
        currentState == Soak ||
        currentState == RampUp ||
        currentState == Peak ||
+       currentState == ConstantTemp ||
        currentState == PreTune ||
        currentState == Tune          
      )
@@ -211,8 +348,8 @@ void controlUpdate(uint64_t time_ms) {
     {
       reportError("Temperature is Way to HOT!!!!!"); 
     }
-    //make it more linear!
-    powerHeater = asinelookupTable[(uint8_t)heaterOutput]; 
+    // Zero-cross SSR uses burst control; linear duty maps to linear power.
+    powerHeater = (uint16_t)heaterOutput;
   } 
   else if(currentState == Edit && myMenue.currentItem==&miManual)
   {
@@ -229,12 +366,17 @@ void controlUpdate(uint64_t time_ms) {
   ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0, powerHeater);
   ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_0);
 
-  if (powerHeater > 0)
-  {
-    digitalWrite(FAN1, 1);
-  }
-  else
-  {
-    digitalWrite(FAN1, 0);
-  }
+  const bool runState =
+    currentState == RampToSoak ||
+    currentState == Soak ||
+    currentState == RampUp ||
+    currentState == Peak ||
+    currentState == CoolDown ||
+    currentState == ConstantTemp ||
+    currentState == PreTune ||
+    currentState == Tune;
+  bool fanOn = runState && !paused;
+  if (fanOverride == 1) fanOn = true;
+  if (fanOverride == 0) fanOn = false;
+  digitalWrite(FAN1, fanOn ? 1 : 0);
 }

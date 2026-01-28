@@ -32,4 +32,13 @@ bool cycleStart(const Menu::Action_t);
 
 bool savePID();
 bool loadPID();
+bool saveConstTempSettings();
+bool loadConstTempSettings();
+bool saveControlTuningSettings();
+bool loadControlTuningSettings();
+void clampControlTuningValues();
 void loadLastUsedProfile();
+void saveLastUsedProfile();
+bool saveParameters(uint8_t profile);
+bool loadParameters(uint8_t profile);
+void loadProfileName(uint8_t id, char * buffer);

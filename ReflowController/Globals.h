@@ -48,6 +48,11 @@
 
 #define BUZZER      2
 
+// HSPI pin mapping (adjust to match your wiring)
+#define HSPI_SCK    14
+#define HSPI_MISO   12
+#define HSPI_MOSI   13
+
 #define LEDC_TIMER              LEDC_TIMER_0
 #define LEDC_MODE               LEDC_LOW_SPEED_MODE
 #define LEDC_OUTPUT_IO          (5) // Define the output GPIO
@@ -72,6 +77,13 @@
 #define MENUE_ITEMS_VISIBLE 8
 #define MENU_ITEM_HIEGT 12
 #define PROFILE_NAME_LENGTH 11
+
+// Default tuning values for inertia guard and ConstantTemp slew limiter.
+#define INERTIA_GUARD_LEAD_DEFAULT_SEC 6.0f
+#define INERTIA_GUARD_HYST_DEFAULT_C 0.5f
+#define INERTIA_GUARD_MIN_RISE_DEFAULT_CPS 0.02f
+#define INERTIA_GUARD_MAX_SETPOINT_DEFAULT_C 120.0f
+#define CONST_TEMP_SLEW_DEFAULT_CPS 0.5f
 
 //structs
 // data type for the values used in the reflow profile
@@ -111,6 +123,8 @@ typedef enum {
   CoolDown,
 
   Complete = 20,
+
+  ConstantTemp = 25,
 
   PreTune = 30,
   Tune,
@@ -161,6 +175,9 @@ extern WebServer serverAction;
 extern volatile boolean globalError;
 
 extern volatile uint16_t  powerHeater;
+extern bool systemPaused;
+extern int8_t fanOverride;
+extern volatile bool pidTuningsDirty;
 
 extern float aktSystemTemperature;
 extern float aktSystemTemperatureRamp; //°C/s
@@ -169,6 +186,13 @@ extern int16_t tuningHeaterOutput;
 extern int16_t tuningNoiseBand;
 extern int16_t tuningOutputStep;
 extern int16_t tuningLookbackSec;
+extern int16_t constantTempSetpoint;
+extern int16_t constantTempBeepMinutes;
+extern float inertiaGuardLeadSec;
+extern float inertiaGuardHysteresisC;
+extern float inertiaGuardMinRiseCps;
+extern float inertiaGuardMaxSetpointC;
+extern float constTempRampCps;
 
 extern int activeProfileId;
 extern Profile_t activeProfile; // the one and only instance
@@ -183,6 +207,17 @@ extern LastItemState_t currentlyRenderedItems[MENUE_ITEMS_VISIBLE];
 
 extern Menu::Item_t miExit;
 extern Menu::Item_t miCycleStart;
+extern Menu::Item_t miConstTemp;
+extern Menu::Item_t miConstTempStart;
+extern Menu::Item_t miConstTempSet;
+extern Menu::Item_t miConstTemp40;
+extern Menu::Item_t miConstTemp60;
+extern Menu::Item_t miConstTemp80;
+extern Menu::Item_t miConstBeepMin;
+extern Menu::Item_t miConstBeepOff;
+extern Menu::Item_t miConstBeep20;
+extern Menu::Item_t miConstBeep30;
+extern Menu::Item_t miConstBeep60;
 extern Menu::Item_t miEditProfile;
 extern Menu::Item_t miName;
 extern Menu::Item_t miRampUpRate;
@@ -203,7 +238,14 @@ extern Menu::Item_t miCycleStartAT;
 extern Menu::Item_t miPidSettingP;
 extern Menu::Item_t miPidSettingI;
 extern Menu::Item_t miPidSettingD;
+extern Menu::Item_t miGuardSettings;
+extern Menu::Item_t miGuardLead;
+extern Menu::Item_t miGuardHyst;
+extern Menu::Item_t miGuardRise;
+extern Menu::Item_t miGuardMax;
+extern Menu::Item_t miConstSlew;
 extern Menu::Item_t miManual;
+extern Menu::Item_t miIODebug;
 extern Menu::Item_t miWIFI;
 extern Menu::Item_t miWIFIUseSaved;
 extern Menu::Item_t miFactoryReset;

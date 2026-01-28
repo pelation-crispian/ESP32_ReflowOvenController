@@ -1,4 +1,5 @@
 #include "Ui.h"
+#include <math.h>
 
 //prototypes
 bool menuExit(const Menu::Action_t);
@@ -7,12 +8,22 @@ bool menuDummy(const Menu::Action_t);
 bool editNumericalValue(const Menu::Action_t);
 bool editProfileName(const Menu::Action_t);
 bool saveLoadProfile(const Menu::Action_t);
+bool constantTempStart(const Menu::Action_t);
+bool constantTempShortcut(const Menu::Action_t);
+bool constantBeepShortcut(const Menu::Action_t);
 bool manualHeating(const Menu::Action_t);
 bool menuWiFi(const Menu::Action_t);
 bool factoryReset(const Menu::Action_t);
+bool ioDebugScreen(const Menu::Action_t);
 bool keyboard(const char * name, char * buffer, uint32_t length, bool init, bool trigger);
+bool numericKeyboard(const char * name, char * buffer, uint32_t length, bool init, bool trigger, bool allowDecimal);
+bool saveConstTempSettings();
+bool loadConstTempSettings();
+bool saveControlTuningSettings();
+bool loadControlTuningSettings();
 void renderMenuItem(const Menu::Item_t *mi, uint8_t pos);
 void updateProcessDisplay();
+static bool isNumericMenuItem(const Menu::Item_t *mi);
 void btn_startstop_tap(Button2& btn);
 void btn_up_hold(Button2 &btn);
 void btn_up_release(Button2 &btn);
@@ -37,11 +48,76 @@ void factoryReset();
 void saveLastUsedProfile();
 void loadLastUsedProfile();
 
+static bool showProcessDetails = false;
+static int8_t numericCursorMove = 0;
+
+enum AdcKey {
+  ADC_NONE = 0,
+  ADC_MINUS,
+  ADC_PLUS,
+  ADC_TIME,
+  ADC_TEMP,
+  ADC_UNKNOWN
+};
+
+static AdcKey decodeAdcKey(int value) {
+  if (value >= 0 && value <= 60) {
+    return ADC_MINUS;
+  }
+  if (value >= 600 && value <= 700) {
+    return ADC_PLUS;
+  }
+  if (value >= 1000 && value <= 1300) {
+    return ADC_TIME;
+  }
+  if (value >= 1500 && value <= 1700) {
+    return ADC_TEMP;
+  }
+  if (value >= 4090) {
+    return ADC_NONE;
+  }
+  return ADC_UNKNOWN;
+}
+
+static AdcKey readAdcKeyLevel() {
+  AdcKey now = decodeAdcKey(analogRead(BTN_12_ADC));
+  if (now == ADC_UNKNOWN) {
+    return ADC_NONE;
+  }
+  return now;
+}
+
+static AdcKey readAdcKeyEdge() {
+  static AdcKey last = ADC_NONE;
+  AdcKey now = readAdcKeyLevel();
+  AdcKey edge = ADC_NONE;
+  if (now != ADC_NONE && last == ADC_NONE) {
+    edge = now;
+  }
+  if (now == ADC_NONE) {
+    last = ADC_NONE;
+  } else {
+    last = now;
+  }
+  return edge;
+}
+
 // ----------------------------------------------------------------------------------------------------------------------------------------
 //       Name,            Label,              Next,               Previous,         Parent,           Child,            Callback
 MenuItem(miExit,          "EXIT",             Menu::NullItem,     Menu::NullItem,   Menu::NullItem,   miCycleStart,     menuExit);
-  MenuItem(miCycleStart,    "Start Cycle",      miEditProfile,      Menu::NullItem,   miExit,           Menu::NullItem,   cycleStart);
-  MenuItem(miEditProfile,   "Edit Profile",     miLoadProfile,      miCycleStart,     miExit,           miName,            menuDummy);
+  MenuItem(miCycleStart,    "Start Cycle",      miConstTemp,        Menu::NullItem,   miExit,           Menu::NullItem,   cycleStart);
+  MenuItem(miConstTemp,     "Constant Temp",   miEditProfile,      miCycleStart,     miExit,           miConstTempStart, menuDummy);
+    MenuItem(miConstTempStart,"Start Hold",     miConstTempSet,     Menu::NullItem,   miConstTemp,      Menu::NullItem,   constantTempStart);
+    MenuItem(miConstTempSet, "Set Temp",        miConstTemp40,      miConstTempStart, miConstTemp,      Menu::NullItem,   editNumericalValue);
+    MenuItem(miConstTemp40,  "Temp 40C",        miConstTemp60,      miConstTempSet,   miConstTemp,      Menu::NullItem,   constantTempShortcut);
+    MenuItem(miConstTemp60,  "Temp 60C",        miConstTemp80,      miConstTemp40,    miConstTemp,      Menu::NullItem,   constantTempShortcut);
+    MenuItem(miConstTemp80,  "Temp 80C",        miConstBeepMin,     miConstTemp60,    miConstTemp,      Menu::NullItem,   constantTempShortcut);
+    MenuItem(miConstBeepMin, "Beep After",      miConstBeepOff,     miConstTemp80,    miConstTemp,      Menu::NullItem,   editNumericalValue);
+    MenuItem(miConstBeepOff, "Beep Off",        miConstBeep20,      miConstBeepMin,   miConstTemp,      Menu::NullItem,   constantBeepShortcut);
+    MenuItem(miConstBeep20,  "Beep 20m",        miConstBeep30,      miConstBeepOff,   miConstTemp,      Menu::NullItem,   constantBeepShortcut);
+    MenuItem(miConstBeep30,  "Beep 30m",        miConstBeep60,      miConstBeep20,    miConstTemp,      Menu::NullItem,   constantBeepShortcut);
+    MenuItem(miConstBeep60,  "Beep 60m",        Menu::NullItem,     miConstBeep30,    miConstTemp,      Menu::NullItem,   constantBeepShortcut);
+  MenuItem(miEditProfile,   "Edit Profile",     miLoadProfile,      miConstTemp,      miExit,           miName,            menuDummy);
     MenuItem(miName,          "Name     ",        miRampUpRate,       Menu::NullItem,   miEditProfile,    Menu::NullItem,   editProfileName);
     MenuItem(miRampUpRate,    "Ramp up  ",        miSoakTemp,         miName,           miEditProfile,    Menu::NullItem,   editNumericalValue);
     MenuItem(miSoakTemp,      "Soak temp",        miSoakTime,         miRampUpRate,     miEditProfile,    Menu::NullItem,   editNumericalValue);
@@ -60,13 +136,35 @@ MenuItem(miExit,          "EXIT",             Menu::NullItem,     Menu::NullItem
       MenuItem(miCycleStartAT,  "Start Autotune",   Menu::NullItem,     miLookbackSec,    miAutoTune,       Menu::NullItem,   cycleStart);
     MenuItem(miPidSettingP,   "Heater Kp",        miPidSettingI,      miAutoTune,       miPidSettings,    Menu::NullItem,   editNumericalValue);
     MenuItem(miPidSettingI,   "Heater Ki",        miPidSettingD,      miPidSettingP,    miPidSettings,    Menu::NullItem,   editNumericalValue);
-    MenuItem(miPidSettingD,   "Heater Kd",        Menu::NullItem,     miPidSettingI,    miPidSettings,    Menu::NullItem,   editNumericalValue);
-  MenuItem(miManual,        "Manual Heating",   miWIFI,             miPidSettings,    miExit,           Menu::NullItem,   manualHeating);
-  MenuItem(miWIFI,          "WIFI",             miFactoryReset,     miManual,         miExit,           miWIFIUseSaved,   menuWiFi);
+    MenuItem(miPidSettingD,   "Heater Kd",        miGuardSettings,    miPidSettingI,    miPidSettings,    Menu::NullItem,   editNumericalValue);
+    MenuItem(miGuardSettings, "Temp Guard",       Menu::NullItem,     miPidSettingD,    miPidSettings,    miGuardLead,      menuDummy);
+      MenuItem(miGuardLead,     "Lead Sec",       miGuardHyst,        Menu::NullItem,   miGuardSettings,  Menu::NullItem,   editNumericalValue);
+      MenuItem(miGuardHyst,     "Hyst C",         miGuardRise,        miGuardLead,      miGuardSettings,  Menu::NullItem,   editNumericalValue);
+      MenuItem(miGuardRise,     "Min Rise",       miGuardMax,         miGuardHyst,      miGuardSettings,  Menu::NullItem,   editNumericalValue);
+      MenuItem(miGuardMax,      "Max Set",        miConstSlew,        miGuardRise,      miGuardSettings,  Menu::NullItem,   editNumericalValue);
+      MenuItem(miConstSlew,     "Const Slew",     Menu::NullItem,     miGuardMax,       miGuardSettings,  Menu::NullItem,   editNumericalValue);
+  MenuItem(miManual,        "Manual Heating",   miIODebug,          miPidSettings,    miExit,           Menu::NullItem,   manualHeating);
+  MenuItem(miIODebug,       "IO Debug",         miWIFI,             miManual,         miExit,           Menu::NullItem,   ioDebugScreen);
+  MenuItem(miWIFI,          "WIFI",             miFactoryReset,     miIODebug,        miExit,           miWIFIUseSaved,   menuWiFi);
     MenuItem(miWIFIUseSaved,  "Connect to Saved", Menu::NullItem,   Menu::NullItem,   miWIFI,           Menu::NullItem,   menuWiFi);
   MenuItem(miFactoryReset,  "Factory Reset",    Menu::NullItem,     miWIFI,           miExit,           Menu::NullItem,   factoryReset);
 
 void uiInit() {
+  // Ensure the TFT is fully reset after ESP32 reset (panel may stay powered).
+  pinMode(LCD_CS, OUTPUT);
+  digitalWrite(LCD_CS, HIGH);
+  pinMode(LCD_DC, OUTPUT);
+  digitalWrite(LCD_DC, HIGH);
+  if (LCD_RESET >= 0) {
+    pinMode(LCD_RESET, OUTPUT);
+    digitalWrite(LCD_RESET, HIGH);
+    delay(5);
+    digitalWrite(LCD_RESET, LOW);
+    delay(20);
+    digitalWrite(LCD_RESET, HIGH);
+    delay(120);
+  }
+
   //LCD init
   tft.initR(INITR_BLACKTAB);
   tft.setTextWrap(false);
@@ -142,6 +240,19 @@ void uiHandleButtons() {
   btn_left.loop();
   btn_stop.loop();
 
+  if (currentState != Edit && currentState <= UIMenuEnd) {
+    AdcKey key = readAdcKeyEdge();
+    if (key == ADC_TEMP) {
+      myMenue.navigate(&miConstTempSet);
+      myMenue.invoke();
+      menuUpdateRequest = true;
+    } else if (key == ADC_TIME) {
+      myMenue.navigate(&miConstBeepMin);
+      myMenue.invoke();
+      menuUpdateRequest = true;
+    }
+  }
+
   uiHandleCountupdown();
 }
 
@@ -150,7 +261,11 @@ void uiHandleCountupdown() {
   {
     if (timer_countupdown.done())
     {
-      encAbsolute += 2;
+      if (currentState == Edit && myMenue.currentItem != &Menu::NullItem && isNumericMenuItem(myMenue.currentItem)) {
+        numericCursorMove += 1;
+      } else {
+        encAbsolute += 2;
+      }
       menuUpdateRequest = true;
       if ((myMenue.currentItem != &Menu::NullItem) && (currentState == Edit))
       {
@@ -165,7 +280,11 @@ void uiHandleCountupdown() {
   {
     if (timer_countupdown.done())
     {
-      encAbsolute -= 2;
+      if (currentState == Edit && myMenue.currentItem != &Menu::NullItem && isNumericMenuItem(myMenue.currentItem)) {
+        numericCursorMove -= 1;
+      } else {
+        encAbsolute -= 2;
+      }
       if ((myMenue.currentItem != &Menu::NullItem) && (currentState == Edit))
       {
         myMenue.executeCallbackAction(Menu::actionDisplay);
@@ -203,9 +322,12 @@ void uiUpdateBottomLine() {
   if (!timer_dsp_btmln.repeat()) {
     return;
   }
-  if (currentState < UIMenuEnd) 
-  {
+  if (currentState == Settings) {
     displayMenusInfos();
+  } else if (currentState == Edit && myMenue.currentItem != &Menu::NullItem) {
+    if (isNumericMenuItem(myMenue.currentItem)) {
+      myMenue.executeCallbackAction(Menu::actionDisplay);
+    }
   }
 }
 
@@ -241,6 +363,8 @@ void uiUpdateProcessDisplay() {
     Serial.print("Display update took: ");
     Serial.print((uint32_t)(esp_timer_get_time() - dtime));
     Serial.println("us!");
+  } else if (currentState == Edit && myMenue.currentItem == &miIODebug) {
+    ioDebugScreen(Menu::actionDisplay);
   }
 }
 
@@ -377,6 +501,340 @@ bool keyboard(const char * name, char * buffer, uint32_t length, bool init, bool
   return finisched;
 }
 
+bool numericKeyboard(const char * name, char * buffer, uint32_t length, bool init, bool trigger, bool allowDecimal)
+{
+  bool finisched=false;
+  static uint32_t p;
+  static uint32_t cursor;
+  if(init)
+  {
+    p=0;
+    encAbsolute=0;
+    trigger=false;
+    tft.fillScreen(ST7735_WHITE);    
+    tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(2, 10);
+    tft.print(name);
+    tft.print(":");
+    p = strlen(buffer);
+    if (p >= length) {
+      p = length > 0 ? length - 1 : 0;
+      buffer[p] = 0;
+    }
+    cursor = p;
+  }
+
+  static int numElements=0;
+  static int lastencAbsolute=0;
+  char start[] =  {'0', 1, 3, 4, '.', 2 };
+  char end[]   =  {'9', 1, 3, 4, '.', 2 };
+  int y[]      =  {50,  70, 70, 70, 90, 90};
+  int x[]      =  {2,   2,  70, 110, 70, 110};
+  int spacing[]=  {14,  0,  0,  0,  0,  0};
+  int akt=0;  
+  
+  if(encAbsolute<0) encAbsolute=0;
+  if(encAbsolute>numElements) encAbsolute=numElements;
+  
+  for(int i=0;i<sizeof(start);i++){
+    for(char c=start[i];c<=end[i];c++)
+    {
+      if(c=='.' && !allowDecimal) continue;
+      tft.setCursor(x[i]+(c-start[i])*spacing[i], y[i]);
+      if(init || encAbsolute== akt || lastencAbsolute== akt){
+        if(encAbsolute== akt){
+          tft.setTextColor(ST7735_WHITE, ST7735_BLUE);          
+        }
+        else{
+          tft.setTextColor(ST7735_BLACK, ST7735_WHITE);          
+        }
+        switch(c){
+          case 1:
+            tft.print("DEL");
+            if(trigger) 
+            {
+              if (cursor > 0) {
+                for (uint32_t i = cursor - 1; i < p; ++i) {
+                  buffer[i] = buffer[i + 1];
+                }
+                cursor--;
+                p--;
+              }
+            }
+            break;
+          case 2:
+            tft.print("OK");
+            if(trigger) 
+            {
+              finisched=true;
+            }
+            break;
+          case 3:
+            tft.print("<<");
+            if (trigger && cursor > 0) {
+              cursor--;
+            }
+            break;
+          case 4:
+            tft.print(">>");
+            if (trigger && cursor < p) {
+              cursor++;
+            }
+            break;
+          case '.':
+            tft.print('.');
+            if(trigger) 
+            {
+              if (allowDecimal && p<(length-1)) {
+                bool hasDot=false;
+                for(uint32_t i=0;i<p;i++){
+                  if(buffer[i]=='.'){ hasDot=true; break; }
+                }
+                if(!hasDot){
+                  for (uint32_t i = p; i > cursor; --i) {
+                    buffer[i] = buffer[i - 1];
+                  }
+                  buffer[cursor++]='.';
+                  buffer[++p]=0;
+                }
+              }
+            }
+            break;
+          default:
+            tft.print(c);
+            if(trigger) 
+            {
+              if (p<(length-1)){
+                for (uint32_t i = p; i > cursor; --i) {
+                  buffer[i] = buffer[i - 1];
+                }
+                buffer[cursor++]=c;
+                buffer[++p]=0;                
+              }
+            }
+            break;
+        } 
+      } 
+      akt++;      
+    }
+  }  
+  
+  numElements=akt-1;
+  lastencAbsolute=encAbsolute;
+
+  //update diaply
+  tft.setCursor(2, 20);
+  tft.setTextColor(ST7735_WHITE, ST7735_RED);
+  tft.setTextWrap(true);
+  char display[32];
+  uint32_t maxLen = length < (sizeof(display) - 1) ? length : (sizeof(display) - 1);
+  uint32_t out = 0;
+  for (uint32_t i = 0; i < p && out < maxLen - 1; ++i) {
+    if (i == cursor && out < maxLen - 1) {
+      display[out++] = '|';
+    }
+    display[out++] = buffer[i];
+  }
+  if (cursor >= p && out < maxLen) {
+    display[out++] = '|';
+  }
+  display[out] = 0;
+  tft.print(display);
+  for(uint32_t i=out;i<maxLen;i++)
+  {
+    tft.print(" ");
+  }
+  tft.setTextWrap(false);  
+  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);  
+  
+  return finisched;
+}
+
+static float pow10f_int(int exp) {
+  float v = 1.0f;
+  if (exp >= 0) {
+    for (int i = 0; i < exp; ++i) v *= 10.0f;
+  } else {
+    for (int i = 0; i < -exp; ++i) v *= 0.1f;
+  }
+  return v;
+}
+
+static uint32_t clampCursorToDigit(const char *buffer, uint32_t len, int32_t cursor) {
+  if (len == 0) return 0;
+  if (cursor < 0) cursor = 0;
+  if ((uint32_t)cursor >= len) cursor = (int32_t)len - 1;
+  if (buffer[cursor] >= '0' && buffer[cursor] <= '9') {
+    return (uint32_t)cursor;
+  }
+  int32_t left = cursor - 1;
+  int32_t right = cursor + 1;
+  while (left >= 0 || (uint32_t)right < len) {
+    if (left >= 0 && buffer[left] >= '0' && buffer[left] <= '9') {
+      return (uint32_t)left;
+    }
+    if ((uint32_t)right < len && buffer[right] >= '0' && buffer[right] <= '9') {
+      return (uint32_t)right;
+    }
+    left--;
+    right++;
+  }
+  return 0;
+}
+
+static bool numericDigitEditor(const char *name, char *buffer, uint32_t length, bool init, bool trigger, bool allowDecimal, uint8_t decimals) {
+  bool finished = false;
+  static uint32_t cursor = 0;
+  static AdcKey heldKey = ADC_NONE;
+  static uint64_t lastAdjust_us = 0;
+  if (init) {
+    numericCursorMove = 0;
+    heldKey = ADC_NONE;
+    lastAdjust_us = 0;
+    tft.setTextSize(1);
+    tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+    tft.fillScreen(ST7735_WHITE);
+    tft.setCursor(2, 10);
+    tft.print(name);
+    tft.print(":");
+    if (buffer[0] == 0) {
+      snprintf(buffer, length, "0");
+    }
+    uint32_t len = strlen(buffer);
+    cursor = clampCursorToDigit(buffer, len, (int32_t)(len ? len - 1 : 0));
+  }
+
+  if (numericCursorMove != 0) {
+    int32_t dir = numericCursorMove > 0 ? 1 : -1;
+    numericCursorMove = 0;
+    uint32_t len = strlen(buffer);
+    int32_t next = (int32_t)cursor + dir;
+    while (next >= 0 && (uint32_t)next < len) {
+      if (buffer[next] >= '0' && buffer[next] <= '9') {
+        cursor = (uint32_t)next;
+        break;
+      }
+      next += dir;
+    }
+  }
+
+  AdcKey key = readAdcKeyLevel();
+  bool applyStep = false;
+  uint64_t now_us = esp_timer_get_time();
+  if (key == ADC_PLUS || key == ADC_MINUS) {
+    if (heldKey != key) {
+      applyStep = true;
+      heldKey = key;
+      lastAdjust_us = now_us;
+    } else if (now_us - lastAdjust_us >= 120000) {
+      applyStep = true;
+      lastAdjust_us = now_us;
+    }
+  } else if (key == ADC_NONE) {
+    heldKey = ADC_NONE;
+  }
+
+  if (applyStep) {
+    float value = atof(buffer);
+    uint32_t len = strlen(buffer);
+    int32_t dot = -1;
+    for (uint32_t i = 0; i < len; ++i) {
+      if (buffer[i] == '.') {
+        dot = (int32_t)i;
+        break;
+      }
+    }
+    float step = 1.0f;
+    if (dot < 0) {
+      int32_t digitsRight = (int32_t)len - 1 - (int32_t)cursor;
+      if (digitsRight < 0) digitsRight = 0;
+      step = pow10f_int(digitsRight);
+    } else {
+      if ((int32_t)cursor < dot) {
+        int32_t digitsRight = (dot - 1 - (int32_t)cursor) + (int32_t)decimals;
+        if (digitsRight < 0) digitsRight = 0;
+        step = pow10f_int(digitsRight);
+      } else {
+        int32_t decPos = (int32_t)cursor - dot;
+        if (decPos < 1) decPos = 1;
+        step = pow10f_int(-decPos);
+      }
+    }
+    float delta = (heldKey == ADC_PLUS) ? step : -step;
+    float newValue = value + delta;
+    if (newValue < 0.0f) newValue = 0.0f;
+    if (decimals > 0) {
+      float scale = pow10f_int(decimals);
+      newValue = roundf(newValue * scale) / scale;
+      char fmt[10];
+      snprintf(fmt, sizeof(fmt), "%%.%uf", (unsigned int)decimals);
+      snprintf(buffer, length, fmt, newValue);
+    } else {
+      int32_t iv = (int32_t)roundf(newValue);
+      if (iv < 0) iv = 0;
+      snprintf(buffer, length, "%ld", (long)iv);
+    }
+
+    uint32_t newLen = strlen(buffer);
+    if (dot >= 0) {
+      int32_t newDot = -1;
+      for (uint32_t i = 0; i < newLen; ++i) {
+        if (buffer[i] == '.') {
+          newDot = (int32_t)i;
+          break;
+        }
+      }
+      if (newDot >= 0) {
+        if ((int32_t)cursor < dot) {
+          cursor = clampCursorToDigit(buffer, newLen, newDot - (dot - (int32_t)cursor));
+        } else {
+          cursor = clampCursorToDigit(buffer, newLen, newDot + ((int32_t)cursor - dot));
+        }
+      } else {
+        cursor = clampCursorToDigit(buffer, newLen, (int32_t)cursor);
+      }
+    } else {
+      int32_t posFromRight = (int32_t)len - 1 - (int32_t)cursor;
+      cursor = clampCursorToDigit(buffer, newLen, (int32_t)newLen - 1 - posFromRight);
+    }
+  }
+
+  if (trigger) {
+    finished = true;
+  }
+
+  tft.setCursor(2, 30);
+  tft.setTextColor(ST7735_WHITE, ST7735_RED);
+  tft.setTextWrap(true);
+  char display[32];
+  uint32_t len = strlen(buffer);
+  uint32_t maxLen = (length < (sizeof(display) - 1)) ? length : (sizeof(display) - 1);
+  uint32_t out = 0;
+  for (uint32_t i = 0; i < len && out < maxLen - 1; ++i) {
+    if (i == cursor && out < maxLen - 1) {
+      display[out++] = '^';
+    }
+    display[out++] = buffer[i];
+  }
+  if (cursor >= len && out < maxLen) {
+    display[out++] = '^';
+  }
+  display[out] = 0;
+  tft.print(display);
+  for (uint32_t i = out; i < maxLen; ++i) {
+    tft.print(" ");
+  }
+  tft.setTextWrap(false);
+  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+
+  tft.setCursor(2, 50);
+  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+  tft.print("+/- change  Up/Down move  Start OK  Left Back   ");
+
+  return finished;
+}
+
 void clearLastMenuItemRenderState() {
   tft.fillScreen(ST7735_WHITE);
   displayMenusInfos();
@@ -412,6 +870,69 @@ void printfloat2(float val) {
   tft.print(buf);
 }
 
+static void formatTimeShort(char *buf, size_t len, uint32_t seconds) {
+  uint32_t hh = seconds / 3600;
+  uint32_t mm = (seconds % 3600) / 60;
+  uint32_t ss = seconds % 60;
+  if (hh > 0) {
+    snprintf(buf, len, "%02lu:%02lu", (unsigned long)hh, (unsigned long)mm);
+  } else {
+    snprintf(buf, len, "%02lu:%02lu", (unsigned long)mm, (unsigned long)ss);
+  }
+}
+
+static void formatTimeLong(char *buf, size_t len, uint32_t seconds) {
+  uint32_t hh = seconds / 3600;
+  uint32_t mm = (seconds % 3600) / 60;
+  uint32_t ss = seconds % 60;
+  snprintf(buf, len, "%02lu:%02lu:%02lu", (unsigned long)hh, (unsigned long)mm, (unsigned long)ss);
+}
+
+static uint16_t stateBarColor(State state) {
+  switch (state) {
+    case RampToSoak:
+    case RampUp:
+    case Peak:
+    case ConstantTemp:
+      return ST7735_ORANGE;
+    case Soak:
+      return ST7735_YELLOW;
+    case CoolDown:
+      return ST7735_CYAN;
+    case Complete:
+      return ST7735_GREEN;
+    case PreTune:
+    case Tune:
+      return ST7735_MAGENTA;
+    default:
+      return ST7735_BLUE;
+  }
+}
+
+static uint16_t stateBarTextColor(State state) {
+  switch (state) {
+    case Soak:
+      return ST7735_BLACK;
+    default:
+      return ST7735_WHITE;
+  }
+}
+
+static const char *shortStateLabel(State state) {
+  switch (state) {
+    case RampToSoak: return "RAMP TO SOAK";
+    case Soak: return "SOAK";
+    case RampUp: return "RAMP UP";
+    case Peak: return "PEAK";
+    case CoolDown: return "COOL";
+    case Complete: return "COMPLETE";
+    case ConstantTemp: return "CONST TEMP";
+    case PreTune: return "PRE-TUNE";
+    case Tune: return "TUNE";
+    default: return "RUN";
+  }
+}
+
 void getItemValuePointer(const Menu::Item_t *mi, float **d, int16_t **i) {
   if (mi == &miRampUpRate)  *d = &activeProfile.rampUpRate;
   if (mi == &miRampDnRate)  *d = &activeProfile.rampDownRate;
@@ -419,9 +940,16 @@ void getItemValuePointer(const Menu::Item_t *mi, float **d, int16_t **i) {
   if (mi == &miSoakTemp)    *i = &activeProfile.soakTemp;
   if (mi == &miPeakTime)    *i = &activeProfile.peakDuration;
   if (mi == &miPeakTemp)    *i = &activeProfile.peakTemp;
+  if (mi == &miConstTempSet) *i = &constantTempSetpoint;
+  if (mi == &miConstBeepMin) *i = &constantTempBeepMinutes;
   if (mi == &miPidSettingP) *d = &heaterPID.Kp;
   if (mi == &miPidSettingI) *d = &heaterPID.Ki;
   if (mi == &miPidSettingD) *d = &heaterPID.Kd; 
+  if (mi == &miGuardLead)   *d = &inertiaGuardLeadSec;
+  if (mi == &miGuardHyst)   *d = &inertiaGuardHysteresisC;
+  if (mi == &miGuardRise)   *d = &inertiaGuardMinRiseCps;
+  if (mi == &miGuardMax)    *d = &inertiaGuardMaxSetpointC;
+  if (mi == &miConstSlew)   *d = &constTempRampCps;
   if (mi == &miHeaterOutput)*i = &tuningHeaterOutput;
   if (mi == &miNoiseBand)   *i = &tuningNoiseBand;
   if (mi == &miOutputStep)  *i = &tuningOutputStep;
@@ -430,6 +958,21 @@ void getItemValuePointer(const Menu::Item_t *mi, float **d, int16_t **i) {
 
 bool isPidSetting(const Menu::Item_t *mi) {
   return mi == &miPidSettingP || mi == &miPidSettingI || mi == &miPidSettingD;
+}
+
+static bool isNumericMenuItem(const Menu::Item_t *mi) {
+  int16_t *iValue = NULL;
+  float *dValue = NULL;
+  getItemValuePointer(mi, &dValue, &iValue);
+  return iValue != NULL || dValue != NULL;
+}
+
+bool isControlTuningSetting(const Menu::Item_t *mi) {
+  return mi == &miGuardLead ||
+         mi == &miGuardHyst ||
+         mi == &miGuardRise ||
+         mi == &miGuardMax ||
+         mi == &miConstSlew;
 }
 
 bool isRampSetting(const Menu::Item_t *mi) {
@@ -449,11 +992,33 @@ bool getItemValueLabel(const Menu::Item_t *mi, char *label) {
   else if(isPidSetting(mi)){
     sprintf(label,"%.2f",*dValue);    
   }
+  else if (mi == &miGuardLead) {
+    sprintf(label,"%.2fs",*dValue);
+  }
+  else if (mi == &miGuardHyst) {
+    sprintf(label,"%.2f\367C",*dValue);
+  }
+  else if (mi == &miGuardRise || mi == &miConstSlew) {
+    sprintf(label,"%.2f\367C/s",*dValue);
+  }
+  else if (mi == &miGuardMax) {
+    sprintf(label,"%.2f\367C",*dValue);
+  }
   else if (mi == &miPeakTemp || mi == &miSoakTemp) {
     sprintf(label,"%d\367C",*iValue);        
   }
+  else if (mi == &miConstTempSet) {
+    sprintf(label,"%d\367C",*iValue);
+  }
   else if (mi == &miPeakTime || mi == &miSoakTime || mi == &miLookbackSec) {
     sprintf(label,"%ds",*iValue);        
+  }
+  else if (mi == &miConstBeepMin) {
+    if (*iValue <= 0) {
+      sprintf(label,"off");
+    } else {
+      sprintf(label,"%dm",*iValue);
+    }
   }
   else if (mi == &miHeaterOutput || mi == &miOutputStep) {
     sprintf(label,"%d%%",*iValue);        
@@ -475,69 +1040,63 @@ bool editNumericalValue(const Menu::Action_t action)
 { 
   static int16_t iValueLast;
   static float   dValueLast;
+  static char    buffer[20];
   int16_t *iValue = NULL;
   float  *dValue = NULL;
   bool init=false;
+  bool trigger=false;
   getItemValuePointer(myMenue.currentItem, &dValue, &iValue);
-  if ((init=(action == Menu::actionTrigger && currentState != Edit)) || action == Menu::actionDisplay) 
+  if ((init=(action == Menu::actionTrigger && currentState != Edit)) || action == Menu::actionDisplay || (trigger=(action == Menu::actionTrigger && currentState == Edit)))
   {
     if (init) 
     {
       currentState = Edit;
-      tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
-      tft.setCursor(10, 80);
-      tft.print("Edit & click to save.");
       //save last Value
       if(iValue!=NULL) iValueLast=*iValue;
       if(dValue!=NULL) dValueLast=*dValue;
-    }
-
-    for (uint8_t i = 0; i < MENUE_ITEMS_VISIBLE; i++) 
-    {
-      if (currentlyRenderedItems[i].mi == myMenue.currentItem) 
-      {
-        uint8_t y = currentlyRenderedItems[i].pos * MENU_ITEM_HIEGT + 2;
-
-        if (init) 
-        {
-          tft.fillRect(69, y - 1, 60, MENU_ITEM_HIEGT - 2, ST7735_RED);
+      if (dValue!=NULL) {
+        if (isPidSetting(myMenue.currentItem) || isControlTuningSetting(myMenue.currentItem)) {
+          snprintf(buffer, sizeof(buffer), "%.2f", *dValue);
+        } else {
+          snprintf(buffer, sizeof(buffer), "%.1f", *dValue);
         }
-
-        tft.setCursor(70, y);
-        break;
+      } else if (iValue!=NULL) {
+        snprintf(buffer, sizeof(buffer), "%d", *iValue);
+      } else {
+        buffer[0]=0;
       }
     }
-
-    tft.setTextColor(ST7735_WHITE, ST7735_RED);
-
-    //no negative numbers nedded!
-    if(encAbsolute<0) encAbsolute=0;       
-
-    if (isRampSetting(myMenue.currentItem) || isPidSetting(myMenue.currentItem)) 
+    bool allowDecimal = (isRampSetting(myMenue.currentItem) ||
+                         isPidSetting(myMenue.currentItem) ||
+                         isControlTuningSetting(myMenue.currentItem));
+    uint8_t decimals = 0;
+    if (allowDecimal) {
+      decimals = (isPidSetting(myMenue.currentItem) || isControlTuningSetting(myMenue.currentItem)) ? 2 : 1;
+    }
+    if (numericDigitEditor(myMenue.getLabel(myMenue.currentItem), buffer, sizeof(buffer), init, trigger, allowDecimal, decimals))
     {
-      float tmp;
-      float factor = (isPidSetting(myMenue.currentItem)) ? 100 : 10;
-
-      if (init) {
-        tmp = *dValue;
-        tmp *= factor;
-        encAbsolute = (int16_t)tmp;
+      if(buffer[0]==0){
+        if(iValue!=NULL) *iValue=iValueLast;
+        if(dValue!=NULL) *dValue=dValueLast;
       }
-      else {
-        tmp = encAbsolute;
-        tmp /= factor;
-        *dValue = tmp;
-      }      
+      else if (dValue!=NULL) {
+        *dValue = atof(buffer);
+      } else if (iValue!=NULL) {
+        *iValue = atoi(buffer);
+      }
+      if (isPidSetting(myMenue.currentItem)) {
+        savePID();
+      }
+      if (isControlTuningSetting(myMenue.currentItem)) {
+        clampControlTuningValues();
+        saveControlTuningSettings();
+      }
+      if (myMenue.currentItem == &miConstTempSet || myMenue.currentItem == &miConstBeepMin) {
+        saveConstTempSettings();
+      }
+      currentState = Settings;
+      clearLastMenuItemRenderState();
     }
-    else {
-      if (init) encAbsolute = *iValue;
-      else *iValue = encAbsolute;
-    }
-    char buf[20];
-    getItemValueLabel(myMenue.currentItem, buf);
-    tft.print(buf);
-    tft.print(" ");
-    tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
   }
   else if ((action == Menu::actionParent || action == Menu::actionTrigger ) && currentState == Edit) 
   {
@@ -622,9 +1181,104 @@ bool manualHeating(const Menu::Action_t action) {
   
 }
 
+bool ioDebugScreen(const Menu::Action_t action) {
+  bool init = false;
+  if ((init = (action == Menu::actionTrigger && currentState != Edit)) || action == Menu::actionDisplay) {
+    if (init) {
+      currentState = Edit;
+      tft.setTextSize(1);
+      tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+      tft.fillScreen(ST7735_WHITE);
+      tft.setCursor(2, 0);
+      tft.print("IO DEBUG");
+      tft.setCursor(90, 0);
+      tft.print("Left=Back");
+    }
+
+    const int adcButtons = analogRead(BTN_12_ADC);
+    const int adcNtc = analogRead(NTC_ADC);
+
+    tft.fillRect(0, 12, 160, 116, ST7735_WHITE);
+    uint8_t y = 14;
+
+    const char *adcLabel = "Open";
+    if (adcButtons >= 0 && adcButtons <= 60) {
+      adcLabel = "-";
+    } else if (adcButtons >= 600 && adcButtons <= 700) {
+      adcLabel = "+";
+    } else if (adcButtons >= 1000 && adcButtons <= 1300) {
+      adcLabel = "Time";
+    } else if (adcButtons >= 1500 && adcButtons <= 1700) {
+      adcLabel = "Temp";
+    } else if (adcButtons < 4095) {
+      adcLabel = "Unknown";
+    }
+
+    tft.setCursor(2, y);
+    tft.print("ADC1_0:");
+    tft.print(adcButtons);
+    tft.print(" ");
+    tft.print(adcLabel);
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("NTC ADC:");
+    tft.print(adcNtc);
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("HEAT:");
+    tft.print(powerHeater);
+    tft.print(" FAN:");
+    tft.print(digitalRead(FAN1));
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("ZC:");
+    tft.print(digitalRead(ZEROX));
+    tft.print(" SS:");
+    tft.print(digitalRead(BTN_2));
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("W:");
+    tft.print(digitalRead(BTN_13));
+    tft.print(" G:");
+    tft.print(digitalRead(BTN_4));
+    tft.print(" T:");
+    tft.print(digitalRead(BTN_3));
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("B:");
+    tft.print(digitalRead(BTN_14));
+    tft.print(" C:");
+    tft.print(digitalRead(BTN_11));
+    tft.print(" ENC:");
+    tft.print(digitalRead(ENC_B));
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("ENC A:");
+    tft.print(digitalRead(ENC1));
+    tft.print(" B:");
+    tft.print(digitalRead(ENC2));
+    y += 10;
+
+    tft.setCursor(2, y);
+    tft.print("ENC ABS:");
+    tft.print(encAbsolute);
+  } else if ((action == Menu::actionParent || action == Menu::actionTrigger) && currentState == Edit) {
+    currentState = Settings;
+    clearLastMenuItemRenderState();
+  }
+  return true;
+}
+
 bool menuWiFi(const Menu::Action_t action){
   static int wifiItemsCount=0;
-  static Menu::Item_t *wifiItems=NULL;
+  static Menu::Item_t wifiItems[20];
+  static char wifiLabels[20][24];
   if(action==Menu::actionTrigger && myMenue.currentItem == &miWIFI)
   {
     //enter Wifi Menu:
@@ -632,48 +1286,36 @@ bool menuWiFi(const Menu::Action_t action){
     tft.setTextColor(ST7735_WHITE);
     tft.setCursor(10, 50);
     tft.print("Scanning...");
-    
-    //free last Menu List
-    for(int i=0;i<wifiItemsCount;i++) free((void*)wifiItems[i].Label);
-    if (wifiItems!=NULL) free(wifiItems);
-    
+
     //Search for networks
     wifiItemsCount = WiFi.scanNetworks();
     Serial.print("Wifis found: ");Serial.println(wifiItemsCount);
     
-    //generate Menu List
-    wifiItems=(Menu::Item_t *)malloc(max(1,wifiItemsCount)*sizeof(Menu::Item_t));
-    if(wifiItems==NULL){
-      reportError("Melloc Error!");
-    }
-    
     if(wifiItemsCount==WIFI_SCAN_FAILED){
-      wifiItemsCount=0;
+      wifiItemsCount=1;
       wifiItems[0].Label="WIFI_SCAN_FAILED!";
       wifiItems[0].Callback=NULL;              
     }
     else if (wifiItemsCount == 0) 
     {      
+      wifiItemsCount=1;
       wifiItems[0].Label="No WiFis found!";
       wifiItems[0].Callback=NULL;        
     } 
     else 
     {
+      if (wifiItemsCount > 20) wifiItemsCount = 20;
       for (int i = 0; i < wifiItemsCount; ++i) 
       {
         String name=WiFi.SSID(i);
-        char * buffer= (char*)malloc(24);
-        if(name==NULL){
-          reportError("Melloc Error!");
-        }
-        name.toCharArray(buffer,24);
+        name.toCharArray(wifiLabels[i],24);
         if(name.length()>23){
-          buffer[20]='.';
-          buffer[21]='.';
-          buffer[22]='.';
-          buffer[23]=0;
+          wifiLabels[i][20]='.';
+          wifiLabels[i][21]='.';
+          wifiLabels[i][22]='.';
+          wifiLabels[i][23]=0;
         }
-        wifiItems[i].Label=buffer;
+        wifiItems[i].Label=wifiLabels[i];
         wifiItems[i].Callback=menuWiFi;        
       }
     }    
@@ -861,6 +1503,7 @@ bool cycleStart(const Menu::Action_t action) {
   if (action == Menu::actionTrigger) {
 
     menuExit(action);
+    systemPaused = false;
     
     cycleStartTime= esp_timer_get_time();
 
@@ -878,6 +1521,41 @@ bool cycleStart(const Menu::Action_t action) {
     menuUpdateRequest = false;
   }
 
+  return true;
+}
+
+bool constantTempStart(const Menu::Action_t action) {
+  if (action == Menu::actionTrigger) {
+    menuExit(action);
+    systemPaused = false;
+    cycleStartTime= esp_timer_get_time();
+    currentState = ConstantTemp;
+    initialProcessDisplay = true;
+    menuUpdateRequest = false;
+  }
+  return true;
+}
+
+bool constantTempShortcut(const Menu::Action_t action) {
+  if (action == Menu::actionTrigger) {
+    if (myMenue.currentItem == &miConstTemp40) constantTempSetpoint = 40;
+    if (myMenue.currentItem == &miConstTemp60) constantTempSetpoint = 60;
+    if (myMenue.currentItem == &miConstTemp80) constantTempSetpoint = 80;
+    saveConstTempSettings();
+    clearLastMenuItemRenderState();
+  }
+  return true;
+}
+
+bool constantBeepShortcut(const Menu::Action_t action) {
+  if (action == Menu::actionTrigger) {
+    if (myMenue.currentItem == &miConstBeepOff) constantTempBeepMinutes = 0;
+    if (myMenue.currentItem == &miConstBeep20) constantTempBeepMinutes = 20;
+    if (myMenue.currentItem == &miConstBeep30) constantTempBeepMinutes = 30;
+    if (myMenue.currentItem == &miConstBeep60) constantTempBeepMinutes = 60;
+    saveConstTempSettings();
+    clearLastMenuItemRenderState();
+  }
   return true;
 }
 
@@ -923,43 +1601,44 @@ void alignRightPrefix(uint16_t v) {
 }
 
 void updateProcessDisplay() {
-  static uint16_t starttime_s=0;
   static float pxPerS;
   static float pxPerC;
   static float estimatedTotalTime;
+  static uint16_t maxTemp;
+  static State lastBarState = None;
+  static bool lastPaused = false;
 
-  const uint8_t h =  86;
-  const uint8_t w = 160;
-  const uint8_t yOffset =  30; // space not available for graph  
-  
-
-  uint16_t dx, dy;
-  uint8_t y = 2;
-
-  // header & initial view
-  tft.setTextColor(ST7735_WHITE, ST7735_BLUE);
+  const uint8_t screenW = tft.width();
+  const uint8_t screenH = tft.height();
+  const uint8_t barH = MENU_ITEM_HIEGT;
+  const uint8_t bottomH = 10;
+  const uint8_t bigTextY = barH + 2;
+  const uint8_t bigTextH = 16;
+  const uint8_t infoY = bigTextY + bigTextH + 2;
+  const uint8_t infoH = 8;
+  const uint8_t graphTop = infoY + infoH + 2;
+  const uint8_t graphBottom = screenH - bottomH - 2;
+  const uint16_t graphH = graphBottom - graphTop;
+  const uint16_t graphW = screenW;
+  const bool paused = systemPaused;
 
   if (initialProcessDisplay) {
     initialProcessDisplay = false;
 
-    starttime_s=esp_timer_get_time()/1000000;
-    
     tft.fillScreen(ST7735_WHITE);
-    tft.fillRect(0, 0, tft.width(), MENU_ITEM_HIEGT, ST7735_BLUE);
-    tft.setCursor(2, y);
+    lastBarState = None;
     
-    uint16_t maxTemp;
     if(currentState == PreTune)
     {
-      tft.print("Tuning ");
-      
       estimatedTotalTime=tuningLookbackSec*20;
       maxTemp = 300 ;
     }
+    else if (currentState == ConstantTemp)
+    {
+      estimatedTotalTime = (constantTempBeepMinutes > 0) ? (constantTempBeepMinutes * 60) : 3600;
+      maxTemp =  max(100, (int)(constantTempSetpoint * 1.2));
+    }
     else{
-      tft.print("Profile ");
-      tft.print(activeProfile.name);
-
       // estimate total run time for current profile
       estimatedTotalTime = activeProfile.soakDuration + activeProfile.peakDuration;
       estimatedTotalTime += (activeProfile.soakTemp - aktSystemTemperature) / (activeProfile.rampUpRate );
@@ -971,85 +1650,193 @@ void updateProcessDisplay() {
     }
     Serial.print("maxTemp=");Serial.println(maxTemp);
     Serial.print("estimatedTotalTime=");Serial.println(estimatedTotalTime);
-    pxPerC =  (float) h / maxTemp;
-    pxPerS = 160 / estimatedTotalTime;
+    pxPerC =  (float) graphH / maxTemp;
+    pxPerS = (graphW - 1) / max(1.0f, estimatedTotalTime);
     Serial.print("pxPerC=");Serial.println(pxPerC);
     Serial.print("pxPerS=");Serial.println(pxPerS);
 
-    // 50°C grid
-    for (uint16_t tg = 0; tg < activeProfile.peakTemp * 1.20; tg += 50) {
-      tft.drawFastHLine(0, h - (tg * pxPerC) + yOffset, 160, 0xC618);
+    // state bar
+    uint16_t barColor = paused ? ST7735_MAGENTA : stateBarColor(currentState);
+    tft.fillRect(0, 0, screenW, barH, barColor);
+    tft.setTextColor(paused ? ST7735_WHITE : stateBarTextColor(currentState), barColor);
+    tft.setTextSize(1);
+    tft.setCursor(2, 2);
+    tft.print(paused ? "PAUSED" : shortStateLabel(currentState));
+    lastBarState = currentState;
+    lastPaused = paused;
+
+    tft.drawRect(0, graphTop, graphW, graphH + 1, 0xC618);
+    if (!showProcessDetails) {
+      for (uint16_t tg = 0; tg < maxTemp; tg += 50) {
+        int16_t gy = graphBottom - (tg * pxPerC);
+        if (gy < graphTop) {
+          break;
+        }
+        tft.drawFastHLine(0, gy, graphW, 0xC618);
+      }
     }
-    
   }
 
-  // elapsed time
-  uint16_t elapsed = (esp_timer_get_time()/1000000 -starttime_s);
-  tft.setCursor(125, y);
-  if(currentState != Complete)
-  {
-    alignRightPrefix(elapsed); 
-    tft.print(elapsed);
-    tft.print("s");    
+  if (currentState != lastBarState || paused != lastPaused) {
+    uint16_t barColor = paused ? ST7735_MAGENTA : stateBarColor(currentState);
+    tft.fillRect(0, 0, screenW, barH, barColor);
+    tft.setTextColor(paused ? ST7735_WHITE : stateBarTextColor(currentState), barColor);
+    tft.setTextSize(1);
+    tft.setCursor(2, 2);
+    tft.print(paused ? "PAUSED" : shortStateLabel(currentState));
+    lastBarState = currentState;
+    lastPaused = paused;
   }
-  
 
-  y += MENU_ITEM_HIEGT + 2;
-
-  tft.setCursor(2, y);
-  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+  uint32_t elapsed = (uint32_t)((esp_timer_get_time() - cycleStartTime) / 1000000ULL);
+  uint32_t remaining = (elapsed < (uint32_t)estimatedTotalTime) ? (uint32_t)estimatedTotalTime - elapsed : 0;
 
   // temperature
+  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
   tft.setTextSize(2);
+  tft.fillRect(0, bigTextY, screenW, bigTextH + 2, ST7735_WHITE);
+  tft.setCursor(2, bigTextY);
   alignRightPrefix((int)aktSystemTemperature);
   printfloat(aktSystemTemperature);
-  tft.print("\367C ");  
+  tft.print("\367C");
+
+  // setpoint + remaining
   tft.setTextSize(1);
-
-  // current state
-  y -= 2;
-  tft.setCursor(95, y);
-  tft.setTextColor(ST7735_BLACK, ST7735_GREEN);
-  
-  tft.print(currentStateToString());
-
-  tft.print("        "); // lazy: fill up space
-
-  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
-
-  // set point
-  y += 10;
-  tft.setCursor(95, y);
-  tft.print("Sp:"); 
-  alignRightPrefix((int)heaterSetpoint); 
+  tft.fillRect(0, infoY, screenW, infoH + 2, ST7735_WHITE);
+  tft.setCursor(2, infoY);
+  tft.print("SP ");
   printfloat(heaterSetpoint);
-  tft.print("\367C  ");
+  tft.print("\367C");
+  char remBuf[8];
+  formatTimeShort(remBuf, sizeof(remBuf), remaining);
+  tft.setCursor(90, infoY);
+  tft.print("Rem ");
+  tft.print(remBuf);
 
-  // draw temperature curves
-  //
-  if(currentState != Complete)
-  {
-    dx = ((uint16_t)(elapsed * pxPerS))%w;
+  if (showProcessDetails) {
+    uint8_t y = graphTop + 2;
+    const uint8_t lineStep = 10;
+    tft.fillRect(1, graphTop + 1, graphW - 2, graphH - 1, ST7735_WHITE);
+    tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(2, y);
+    if (currentState == ConstantTemp) {
+      tft.print("Mode: Const ");
+      tft.print(constantTempSetpoint);
+      tft.print("\367C");
+    } else if (currentState == PreTune || currentState == Tune) {
+      tft.print("Mode: Tune");
+    } else {
+      tft.print("Profile: ");
+      tft.print(activeProfile.name);
+    }
+    y += lineStep;
 
-    // temperature setpoint
-    dy = h - (heaterSetpoint * pxPerC) + yOffset;
-    tft.drawPixel(dx, dy, ST7735_BLUE);
-  
-    // actual temperature
-    dy = h - (aktSystemTemperature * pxPerC) + yOffset;
-    tft.drawPixel(dx, dy, ST7735_RED);
+    char elapsedBuf[12];
+    formatTimeLong(elapsedBuf, sizeof(elapsedBuf), elapsed);
+    tft.setCursor(2, y);
+    tft.print("Elapsed ");
+    tft.print(elapsedBuf);
+    y += lineStep;
+
+    char remainBuf[8];
+    formatTimeShort(remainBuf, sizeof(remainBuf), remaining);
+    tft.setCursor(2, y);
+    tft.print("Remain  ");
+    tft.print(remainBuf);
+    y += lineStep;
+
+    if (currentState == ConstantTemp) {
+      tft.setCursor(2, y);
+      if (constantTempBeepMinutes <= 0) {
+        tft.print("Beep Off");
+      } else {
+        int32_t beepRemaining = (int32_t)constantTempBeepMinutes * 60 - (int32_t)elapsed;
+        if (beepRemaining <= 0) {
+          tft.print("Beep Done");
+        } else {
+          char beepBuf[8];
+          formatTimeShort(beepBuf, sizeof(beepBuf), (uint32_t)beepRemaining);
+          tft.print("Beep ");
+          tft.print(beepBuf);
+        }
+      }
+      y += lineStep;
+    }
+
+    tft.setCursor(2, y);
+    tft.print("Ramp ");
+    printfloat2(aktSystemTemperatureRamp);
+    tft.print("\367C/s");
+    y += lineStep;
+
+    uint16_t powerPercent = (uint16_t)heaterOutput*100/256;
+    tft.setCursor(2, y);
+    tft.print("Power ");
+    tft.print(powerPercent);
+    tft.print('%');
+    y += lineStep;
+
+    tft.setCursor(2, y);
+    tft.print("PID P:");
+    printfloat2(heaterPID.Kp);
+    tft.print(" I:");
+    printfloat2(heaterPID.Ki);
+    tft.print(" D:");
+    printfloat2(heaterPID.Kd);
+  } else {
+    if(currentState != Complete && !paused)
+    {
+      uint16_t dx = (uint16_t)(elapsed * pxPerS);
+      if (dx >= graphW) {
+        dx = graphW - 1;
+      }
+
+      int16_t dy = graphBottom - (heaterSetpoint * pxPerC);
+      if (dy < graphTop) dy = graphTop;
+      if (dy > graphBottom) dy = graphBottom;
+      tft.drawPixel(dx, dy, ST7735_BLUE);
+    
+      dy = graphBottom - (aktSystemTemperature * pxPerC);
+      if (dy < graphTop) dy = graphTop;
+      if (dy > graphBottom) dy = graphBottom;
+      tft.drawPixel(dx, dy, ST7735_RED);
+    }
   }
   
-  // set values
-  tft.setCursor(2, 119);
-  uint16_t percent=(uint16_t)heaterOutput*100/256;
-  alignRightPrefix(percent); 
+  const bool fanOn =
+    currentState == RampToSoak ||
+    currentState == Soak ||
+    currentState == RampUp ||
+    currentState == Peak ||
+    currentState == CoolDown ||
+    currentState == ConstantTemp ||
+    currentState == PreTune ||
+    currentState == Tune;
+  bool fanStatus = fanOn && !paused;
+  if (fanOverride == 1) fanStatus = true;
+  if (fanOverride == 0) fanStatus = false;
+
+  tft.setTextSize(1);
+  tft.fillRect(0, screenH - bottomH, screenW, bottomH, ST7735_WHITE);
+  tft.setCursor(2, screenH - bottomH + 1);
+  uint16_t percent = (uint16_t)heaterOutput*100/256;
+  const bool heaterOn = percent > 0;
+  tft.setTextColor(heaterOn ? ST7735_RED : ST7735_BLACK, ST7735_WHITE);
+  tft.print("H:");
+  tft.print(heaterOn ? "On " : "Off");
+
+  tft.setCursor(50, screenH - bottomH + 1);
+  tft.setTextColor(fanStatus ? ST7735_BLUE : ST7735_BLACK, ST7735_WHITE);
+  tft.print("F:");
+  tft.print(fanStatus ? "On " : "Off");
+
+  tft.setCursor(100, screenH - bottomH + 1);
+  tft.setTextColor(ST7735_BLACK, ST7735_WHITE);
+  tft.print("P:");
+  alignRightPrefix(percent);
   tft.print(percent);
   tft.print('%');
-
-  tft.print("      \x12 "); // alternative: \x7f
-  printfloat2(aktSystemTemperatureRamp);
-  tft.print("\367C/s    ");
 }
 
 void memoryFeedbackScreen(uint8_t profileId, bool loading) {
@@ -1096,6 +1883,29 @@ void makeDefaultPID() {
   heaterPID.Kp =  0.60; 
   heaterPID.Ki =  0.01;
   heaterPID.Kd = 19.70;
+}
+
+// Default tuning values for the low-temp inertia guard and ConstantTemp slew limiter.
+void makeDefaultControlTuning() {
+  inertiaGuardLeadSec = INERTIA_GUARD_LEAD_DEFAULT_SEC;
+  inertiaGuardHysteresisC = INERTIA_GUARD_HYST_DEFAULT_C;
+  inertiaGuardMinRiseCps = INERTIA_GUARD_MIN_RISE_DEFAULT_CPS;
+  inertiaGuardMaxSetpointC = INERTIA_GUARD_MAX_SETPOINT_DEFAULT_C;
+  constTempRampCps = CONST_TEMP_SLEW_DEFAULT_CPS;
+}
+
+void clampControlTuningValues() {
+  if (isnan(inertiaGuardLeadSec) || inertiaGuardLeadSec < 0.0f) inertiaGuardLeadSec = 0.0f;
+  if (isnan(inertiaGuardHysteresisC) || inertiaGuardHysteresisC < 0.0f) inertiaGuardHysteresisC = 0.0f;
+  if (isnan(inertiaGuardMinRiseCps) || inertiaGuardMinRiseCps < 0.0f) inertiaGuardMinRiseCps = 0.0f;
+  if (isnan(inertiaGuardMaxSetpointC) || inertiaGuardMaxSetpointC < 0.0f) inertiaGuardMaxSetpointC = 0.0f;
+  if (isnan(constTempRampCps) || constTempRampCps < 0.0f) constTempRampCps = 0.0f;
+
+  if (inertiaGuardLeadSec > 120.0f) inertiaGuardLeadSec = 120.0f;
+  if (inertiaGuardHysteresisC > 20.0f) inertiaGuardHysteresisC = 20.0f;
+  if (inertiaGuardMinRiseCps > 5.0f) inertiaGuardMinRiseCps = 5.0f;
+  if (inertiaGuardMaxSetpointC > 350.0f) inertiaGuardMaxSetpointC = 350.0f;
+  if (constTempRampCps > 20.0f) constTempRampCps = 20.0f;
 }
 
 void getProfileKey(uint8_t profile, char * buffer){
@@ -1170,6 +1980,40 @@ bool loadPID() {
   return true;  
 }
 
+bool saveControlTuningSettings() {
+  PREF.putFloat("IG_LEAD", inertiaGuardLeadSec);
+  PREF.putFloat("IG_HYST", inertiaGuardHysteresisC);
+  PREF.putFloat("IG_RISE", inertiaGuardMinRiseCps);
+  PREF.putFloat("IG_MAX", inertiaGuardMaxSetpointC);
+  PREF.putFloat("CT_SLEW", constTempRampCps);
+  return true;
+}
+
+bool loadControlTuningSettings() {
+  makeDefaultControlTuning();
+  inertiaGuardLeadSec = PREF.getFloat("IG_LEAD", inertiaGuardLeadSec);
+  inertiaGuardHysteresisC = PREF.getFloat("IG_HYST", inertiaGuardHysteresisC);
+  inertiaGuardMinRiseCps = PREF.getFloat("IG_RISE", inertiaGuardMinRiseCps);
+  inertiaGuardMaxSetpointC = PREF.getFloat("IG_MAX", inertiaGuardMaxSetpointC);
+  constTempRampCps = PREF.getFloat("CT_SLEW", constTempRampCps);
+  clampControlTuningValues();
+  return true;
+}
+
+bool saveConstTempSettings() {
+  PREF.putShort("CT_SET", constantTempSetpoint);
+  PREF.putShort("CT_BEEP", constantTempBeepMinutes);
+  return true;
+}
+
+bool loadConstTempSettings() {
+  constantTempSetpoint = PREF.getShort("CT_SET", constantTempSetpoint);
+  constantTempBeepMinutes = PREF.getShort("CT_BEEP", constantTempBeepMinutes);
+  if (constantTempSetpoint < 0) constantTempSetpoint = 0;
+  if (constantTempBeepMinutes < 0) constantTempBeepMinutes = 0;
+  return true;
+}
+
 
 void factoryReset() {
   makeDefaultProfile();
@@ -1234,6 +2078,10 @@ void btn_startstop_tap(Button2& btn)
     currentState = Settings;
     menuUpdateRequest = true;
   }
+  else if (currentState == ConstantTemp)
+  {
+    currentState = Complete;
+  }
   else if (currentState == CoolDown) 
   {
     currentState = Complete;
@@ -1259,9 +2107,9 @@ void btn_up_release(Button2 &btn)
 
 void btn_up_tap(Button2 &btn)
 {
-  encAbsolute -= 1;
   if (currentState == Settings)
   {
+    encAbsolute -= 1;
     myMenue.navigate(myMenue.getPrev());
     menuUpdateRequest = true;
   }
@@ -1269,6 +2117,11 @@ void btn_up_tap(Button2 &btn)
   {
     if (myMenue.currentItem != &Menu::NullItem)
     {
+      if (isNumericMenuItem(myMenue.currentItem)) {
+        numericCursorMove -= 1;
+      } else {
+        encAbsolute -= 1;
+      }
       myMenue.executeCallbackAction(Menu::actionDisplay);
     }
   }
@@ -1290,9 +2143,9 @@ void btn_down_release(Button2 &btn)
 
 void btn_down_tap(Button2 &btn)
 {
-  encAbsolute += 1;
   if (currentState == Settings)
   {
+    encAbsolute += 1;
     myMenue.navigate(myMenue.getNext());
     menuUpdateRequest = true;
   }
@@ -1300,6 +2153,11 @@ void btn_down_tap(Button2 &btn)
   {
     if (myMenue.currentItem != &Menu::NullItem)
     {
+      if (isNumericMenuItem(myMenue.currentItem)) {
+        numericCursorMove += 1;
+      } else {
+        encAbsolute += 1;
+      }
       myMenue.executeCallbackAction(Menu::actionDisplay);
     }
   }
@@ -1312,6 +2170,11 @@ void btn_stop_tap(Button2& btn)
 
 void btn_left_tap(Button2& btn)
 {
+  if (currentState > UIMenuEnd) {
+    showProcessDetails = !showProcessDetails;
+    initialProcessDisplay = true;
+    return;
+  }
   Serial.println("DClick");
   Serial.print("currentState: ");
   Serial.println(currentState);
